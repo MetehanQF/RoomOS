@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roomos.local/schemas/group-command-result.schema.json",
+  "title": "RoomOS Group Command Result",
+  "type": "object",
+  "required": ["accepted", "device_id", "succeeded", "failed"],
+  "properties": {
+    "accepted": { "type": "boolean" },
+    "device_id": { "const": "all_room_lights" },
+    "succeeded": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "failed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["device_id", "reason"],
+        "properties": {
+          "device_id": { "type": "string" },
+          "reason": { "enum": ["unavailable", "service_failed"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

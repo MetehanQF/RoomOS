@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# No secrets are used anywhere in this workflow. The test suite runs entirely
+# against fakes and the bundled placeholder device registry, so CI never needs a
+# Home Assistant instance, a token, or a paired device.
+
+jobs:
+  privacy:
+    name: Privacy scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan tracked files for deployment-specific values
+        run: bash .github/scripts/privacy-scan.sh
+
+  core:
+    name: Core tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        working-directory: core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[test]'
+
+      - name: Test
+        working-directory: core
+        run: python -m pytest -q
+
+  web:
+    name: Web tests, lint and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      - name: Test
+        working-directory: web
+        run: npm test
+
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+  compose:
+    name: Compose, nginx and image build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate base compose file
+        run: docker compose config --quiet
+
+      - name: Validate TLS overlay
+        env:
+          ROOMOS_TLS_CERT: /tmp/ci-fullchain.pem
+          ROOMOS_TLS_KEY: /tmp/ci-privkey.pem
+        run: docker compose -f compose.yaml -f compose.tls.yaml config --quiet
+
+      - name: Validate nginx configuration
+        run: bash .github/scripts/nginx-validate.sh
+
+      - name: Build images
+        run: docker compose build

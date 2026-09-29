@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roomos.local/schemas/event.schema.json",
+  "title": "RoomOS Event",
+  "type": "object",
+  "required": ["type", "timestamp", "data"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "light.state_changed",
+        "system.metric_updated",
+        "system.node_online",
+        "system.node_offline",
+        "roomos.connection"
+      ]
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "device_id": { "type": ["string", "null"] },
+    "data": { "type": "object" }
+  },
+  "additionalProperties": false
+}

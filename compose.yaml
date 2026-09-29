@@ -1,0 +1,110 @@
+name: roomos
+
+services:
+  core:
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+    image: roomos-core:0.1.0
+    restart: unless-stopped
+    environment:
+      HA_URL: ${HA_URL:-http://homeassistant.local:8123}
+      HA_TOKEN: ${HA_TOKEN:-}
+      ROOMOS_DEVICE_REGISTRY: ${ROOMOS_DEVICE_REGISTRY:-}
+      ROOMOS_LOG_LEVEL: ${ROOMOS_LOG_LEVEL:-INFO}
+      ROOMOS_HA_CONNECT_ENABLED: ${ROOMOS_HA_CONNECT_ENABLED:-false}
+      ROOMOS_CONTROL_ENABLED: ${ROOMOS_CONTROL_ENABLED:-false}
+      ROOMOS_CONTROL_POLICY: ${ROOMOS_CONTROL_POLICY:-read_only}
+      ROOMOS_CONTROL_DEVICE_IDS: ${ROOMOS_CONTROL_DEVICE_IDS:-}
+      ROOMOS_CONTROL_ACTIONS: ${ROOMOS_CONTROL_ACTIONS:-}
+      ROOMOS_AUTH_ENABLED: ${ROOMOS_AUTH_ENABLED:-true}
+      # Auth state lives in the roomos_auth volume. It is created on first run
+      # and must never be baked into an image or committed.
+      ROOMOS_AUTH_DATABASE_PATH: /var/lib/roomos-auth/roomos-auth.db
+      ROOMOS_AUTH_SECRET_PATH: /var/lib/roomos-auth/server-secret
+      # The exact origin and host RoomOS will accept authenticated requests from.
+      # Set both to the name your clients actually type.
+      ROOMOS_AUTH_ALLOWED_ORIGIN: ${ROOMOS_AUTH_ALLOWED_ORIGIN:-https://roomos.example.com}
+      ROOMOS_AUTH_ALLOWED_HOST: ${ROOMOS_AUTH_ALLOWED_HOST:-roomos.example.com}
+      ROOMOS_AUTH_SESSION_SLIDING_DAYS: ${ROOMOS_AUTH_SESSION_SLIDING_DAYS:-30}
+      ROOMOS_AUTH_SESSION_ABSOLUTE_DAYS: ${ROOMOS_AUTH_SESSION_ABSOLUTE_DAYS:-180}
+      ROOMOS_AUTH_PAIRING_TTL_SECONDS: ${ROOMOS_AUTH_PAIRING_TTL_SECONDS:-600}
+      ROOMOS_AUTH_PAIRING_ATTEMPTS: ${ROOMOS_AUTH_PAIRING_ATTEMPTS:-5}
+      ROOMOS_AUTH_PAIRING_WINDOW_SECONDS: ${ROOMOS_AUTH_PAIRING_WINDOW_SECONDS:-300}
+      ROOMOS_HA_RECONNECT_MIN_SECONDS: ${ROOMOS_HA_RECONNECT_MIN_SECONDS:-1}
+      ROOMOS_HA_RECONNECT_MAX_SECONDS: ${ROOMOS_HA_RECONNECT_MAX_SECONDS:-60}
+    expose:
+      - "5501"
+    volumes:
+      - roomos_auth:/var/lib/roomos-auth
+    networks:
+      - roomos_internal
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5501/healthz', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: roomos-web:0.1.0
+    restart: unless-stopped
+    depends_on:
+      core:
+        condition: service_healthy
+    # Loopback-only by default. Set ROOMOS_BIND_ADDR to this host's LAN address
+    # to reach RoomOS from a tablet. Never bind to 0.0.0.0.
+    ports:
+      - "${ROOMOS_BIND_ADDR:-127.0.0.1}:${ROOMOS_HTTP_PORT:-5500}:8080"
+    networks:
+      - roomos_internal
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=16m,uid=101,gid=101
+      - /var/run:size=1m,uid=101,gid=101
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  roomos_internal:
+    driver: bridge
+
+volumes:
+  # Device records, sessions and the server secret. Generated on first run;
+  # deleting this volume revokes every paired device.
+  roomos_auth:
