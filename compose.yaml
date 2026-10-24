@@ -5,21 +5,55 @@ services:
     build:
       context: ./core
       dockerfile: Dockerfile
-    image: roomos-core:0.1.0
+      args:
+        ROOMOS_RELEASE: ${ROOMOS_RELEASE:-development}
+        ROOMOS_REVISION: ${ROOMOS_REVISION:-unknown}
+        ROOMOS_BUILD_CREATED: ${ROOMOS_BUILD_CREATED:-1970-01-01T00:00:00Z}
+        ROOMOS_SOURCE_URI: ${ROOMOS_SOURCE_URI:-urn:roomos:source}
+    # Per-service pins prevent a Web-only rollout from changing Core on a later Compose run.
+    image: roomos-core:${ROOMOS_CORE_IMAGE_TAG:-${ROOMOS_IMAGE_TAG:?ROOMOS_CORE_IMAGE_TAG or ROOMOS_IMAGE_TAG must be set}}
     restart: unless-stopped
     environment:
       HA_URL: ${HA_URL:-http://homeassistant.local:8123}
+      # Logical ID -> Home Assistant entity mapping (see config/README.md).
+      ROOMOS_INSTALLATION_PATH: /etc/roomos/installation.yaml
       HA_TOKEN: ${HA_TOKEN:-}
-      ROOMOS_DEVICE_REGISTRY: ${ROOMOS_DEVICE_REGISTRY:-}
       ROOMOS_LOG_LEVEL: ${ROOMOS_LOG_LEVEL:-INFO}
       ROOMOS_HA_CONNECT_ENABLED: ${ROOMOS_HA_CONNECT_ENABLED:-false}
       ROOMOS_CONTROL_ENABLED: ${ROOMOS_CONTROL_ENABLED:-false}
       ROOMOS_CONTROL_POLICY: ${ROOMOS_CONTROL_POLICY:-read_only}
       ROOMOS_CONTROL_DEVICE_IDS: ${ROOMOS_CONTROL_DEVICE_IDS:-}
       ROOMOS_CONTROL_ACTIONS: ${ROOMOS_CONTROL_ACTIONS:-}
+      ROOMOS_ROUTINES_PATH: /var/lib/roomos-auth/routines.json
+      ROOMOS_ROUTINES_TIMEZONE: ${ROOMOS_ROUTINES_TIMEZONE:-UTC}
+      ROOMOS_ROUTINES_SCHEDULER_INTERVAL_SECONDS: ${ROOMOS_ROUTINES_SCHEDULER_INTERVAL_SECONDS:-10}
+      ROOMOS_ROUTINES_MAX_CONCURRENCY: ${ROOMOS_ROUTINES_MAX_CONCURRENCY:-2}
+      ROOMOS_FCM_ENABLED: ${ROOMOS_FCM_ENABLED:-false}
+      ROOMOS_FCM_CREDENTIALS_PATH: ${ROOMOS_FCM_CREDENTIALS_PATH:-/run/secrets/roomos-fcm-service-account.json}
+      ROOMOS_NOTIFICATION_DESTINATIONS_PATH: ${ROOMOS_NOTIFICATION_DESTINATIONS_PATH:-/var/lib/roomos-auth/notification-destinations.json}
+      ROOMOS_FCM_TARGETS_PATH: ${ROOMOS_FCM_TARGETS_PATH:-/var/lib/roomos-auth/fcm-targets.json}
+      ROOMOS_NOTIFICATION_INCIDENTS_PATH: ${ROOMOS_NOTIFICATION_INCIDENTS_PATH:-/var/lib/roomos-auth/notification-incidents.json}
+      ROOMOS_NOTIFICATIONS_DISPATCHER_MAX_SLEEP_SECONDS: ${ROOMOS_NOTIFICATIONS_DISPATCHER_MAX_SLEEP_SECONDS:-60}
+      # Push delivery: `legacy` (fixed production notifications only) or `smart` (alert-driven).
+      ROOMOS_PUSH_MODE: ${ROOMOS_PUSH_MODE:-legacy}
+      ROOMOS_PUSH_TIMEZONE: ${ROOMOS_PUSH_TIMEZONE:-UTC}
+      ROOMOS_WEBPUSH_VAPID_SUBJECT: ${ROOMOS_WEBPUSH_VAPID_SUBJECT:-https://roomos.example.com}
+      # The key may live in the (encrypted-backup) state dir instead of the /run/secrets mount.
+      ROOMOS_WEBPUSH_VAPID_PRIVATE_KEY_PATH: ${ROOMOS_WEBPUSH_VAPID_PRIVATE_KEY_PATH:-/run/secrets/roomos-vapid-private.pem}
+      ROOMOS_DNS_MONITOR_ENABLED: ${ROOMOS_DNS_MONITOR_ENABLED:-false}
+      # Your two DNS resolvers. The defaults are RFC 5737 documentation addresses.
+      ROOMOS_DNS_PRIMARY_ADDRESS: ${ROOMOS_DNS_PRIMARY_ADDRESS:-192.0.2.53}
+      ROOMOS_DNS_SECONDARY_ADDRESS: ${ROOMOS_DNS_SECONDARY_ADDRESS:-192.0.2.54}
+      ROOMOS_DNS_PROBE_NAME: ${ROOMOS_DNS_PROBE_NAME:-example.com.}
+      ROOMOS_DNS_PROBE_INTERVAL_SECONDS: ${ROOMOS_DNS_PROBE_INTERVAL_SECONDS:-60}
+      ROOMOS_DNS_PROBE_TIMEOUT_SECONDS: ${ROOMOS_DNS_PROBE_TIMEOUT_SECONDS:-2}
+      # Windows workstation telemetry via HASS.Agent (empty = not configured). See docs/configuration.md.
+      ROOMOS_DEVICES_WORKSTATION_AGENT_ID: ${ROOMOS_DEVICES_WORKSTATION_AGENT_ID:-}
+      ROOMOS_DEVICES_WORKSTATION_ENTITIES: ${ROOMOS_DEVICES_WORKSTATION_ENTITIES:-}
+      ROOMOS_DEVICES_WINDOWS_HEARTBEAT_SECONDS: ${ROOMOS_DEVICES_WINDOWS_HEARTBEAT_SECONDS:-120}
+      ROOMOS_DEVICES_CLIENT_TELEMETRY: ${ROOMOS_DEVICES_CLIENT_TELEMETRY:-}
+      ROOMOS_DNS_PROBE_STARTUP_DELAY_SECONDS: ${ROOMOS_DNS_PROBE_STARTUP_DELAY_SECONDS:-1}
       ROOMOS_AUTH_ENABLED: ${ROOMOS_AUTH_ENABLED:-true}
-      # Auth state lives in the roomos_auth volume. It is created on first run
-      # and must never be baked into an image or committed.
       ROOMOS_AUTH_DATABASE_PATH: /var/lib/roomos-auth/roomos-auth.db
       ROOMOS_AUTH_SECRET_PATH: /var/lib/roomos-auth/server-secret
       # The exact origin and host RoomOS will accept authenticated requests from.
@@ -36,7 +70,20 @@ services:
     expose:
       - "5501"
     volumes:
+      # Auth and runtime state (devices, sessions, server secret, routines, push).
+      # Created on first run; never bake it into an image or commit it.
       - roomos_auth:/var/lib/roomos-auth
+      - ${ROOMOS_INSTALLATION_HOST_PATH:-./core/app/installation.example.yaml}:/etc/roomos/installation.yaml:ro
+      - ${ROOMOS_FCM_CREDENTIALS_HOST_PATH:-/dev/null}:/run/secrets/roomos-fcm-service-account.json:ro
+      - ${ROOMOS_WEBPUSH_VAPID_HOST_PATH:-/dev/null}:/run/secrets/roomos-vapid-private.pem:ro
+      # Non-secret backup status only (scripts/roomos-backup-run.sh writes it). Never the
+      # backup directory, artifacts or key.
+      - type: bind
+        source: ${ROOMOS_BACKUP_STATUS_HOST_DIR:-./data/backup-status}
+        target: /run/roomos-backup-status
+        read_only: true
+        bind:
+          create_host_path: true
     networks:
       - roomos_internal
     read_only: true
@@ -65,7 +112,12 @@ services:
     build:
       context: .
       dockerfile: web/Dockerfile
-    image: roomos-web:0.1.0
+      args:
+        ROOMOS_RELEASE: ${ROOMOS_RELEASE:-development}
+        ROOMOS_REVISION: ${ROOMOS_REVISION:-unknown}
+        ROOMOS_BUILD_CREATED: ${ROOMOS_BUILD_CREATED:-1970-01-01T00:00:00Z}
+        ROOMOS_SOURCE_URI: ${ROOMOS_SOURCE_URI:-urn:roomos:source}
+    image: roomos-web:${ROOMOS_WEB_IMAGE_TAG:-${ROOMOS_IMAGE_TAG:?ROOMOS_WEB_IMAGE_TAG or ROOMOS_IMAGE_TAG must be set}}
     restart: unless-stopped
     depends_on:
       core:

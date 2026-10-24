@@ -1,13 +1,49 @@
-import type { GroupCommandResult, Health, Light, RoomOSEvent } from './types'
+import type { CommandFeedback, GroupCommandResult, Health, Light, RoomOSEvent, SceneActivationResult, SceneCatalog } from './types'
+
+export type SceneActivationGate = { busy: boolean }
+
+export function beginSceneActivation(gate: SceneActivationGate) {
+  if (gate.busy) return false
+  gate.busy = true
+  return true
+}
+
+export function endSceneActivation(gate: SceneActivationGate) {
+  gate.busy = false
+}
+
+export function applySceneActivationResult(catalog: SceneCatalog, result: SceneActivationResult): SceneCatalog {
+  if (result.status === 'failed') return catalog
+  return {
+    ...catalog,
+    last_applied: {
+      scene: result.scene,
+      name: result.name,
+      status: result.status,
+      applied_at: result.applied_at,
+    },
+  }
+}
+
+export function applySceneEvent(catalog: SceneCatalog, event: RoomOSEvent): SceneCatalog {
+  if (event.type !== 'scene.active_changed') return catalog
+  return { ...catalog, active_scene: event.data.active_scene ?? null }
+}
+
+export function describeSceneResult(result: SceneActivationResult): CommandFeedback {
+  if (result.status === 'success') return { tone: 'success', title: `${result.name} applied`, detail: `${result.applied.length} light${result.applied.length === 1 ? '' : 's'} updated.` }
+  if (result.status === 'partial') return { tone: 'partial', title: `${result.name} partially applied`, detail: `${result.applied.length} applied · ${result.skipped.length} unavailable · ${result.failed.length} failed` }
+  return { tone: 'error', title: `${result.name} could not be applied`, detail: `${result.failed.length} target${result.failed.length === 1 ? '' : 's'} failed.` }
+}
 
 export type LightAction = 'power' | 'brightness' | 'color' | 'temperature' | 'effect'
 
-/**
- * Display names come from Core's device registry, so the client never carries a
- * second copy of the deployment's device list.
- */
-export function lightNameMap(lights: Light[] | null | undefined): Record<string, string> {
-  return Object.fromEntries((lights ?? []).map((light) => [light.id, light.name]))
+export const lightNames: Record<string, string> = {
+  room_main: 'Main light',
+  room_2: 'Corner light',
+  room_3: 'Ambient light',
+  room_4: 'Window light',
+  desk_ambient: 'Desk ambient',
 }
 
 export function brightnessToPercent(value: number | null) {
@@ -50,14 +86,11 @@ export function applyLightEvent(lights: Light[] | null, event: RoomOSEvent) {
   return lights.map((light) => light.id === event.device_id ? event.data.light! : light)
 }
 
-export function describeGroupResult(
-  result: GroupCommandResult,
-  names: Record<string, string> = {},
-) {
+export function describeGroupResult(result: GroupCommandResult) {
   if (result.accepted && result.failed.length === 0) {
     return { tone: 'success' as const, title: 'All lights updated', detail: `${result.succeeded.length} of ${result.succeeded.length} lights responded.` }
   }
-  const failed = result.failed.map((item) => names[item.device_id] ?? item.device_id)
+  const failed = result.failed.map((item) => lightNames[item.device_id] ?? item.device_id)
   return {
     tone: 'partial' as const,
     title: 'Some lights did not respond',

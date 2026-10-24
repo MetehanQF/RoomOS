@@ -13,9 +13,14 @@ small API for what a room needs, and its clients are built only against that.
 ## Boundaries
 
 RoomOS never talks to a device directly. Every command is a Home Assistant
-service call; every read is a state read constrained to the device registry.
-RoomOS does not touch Docker, SSH, host files, cameras, or anything else on the
-host.
+service call; every read is a state read constrained to the installation
+registry. Camera status and snapshots, host metrics and presence all arrive as
+Home Assistant entities. RoomOS does not touch Docker, SSH, host files, or
+anything else on the host.
+
+Core's only other outbound traffic is optional and explicit: functional DNS
+probes to the two resolvers you configure, and push delivery to Firebase Cloud
+Messaging and allowlisted Web Push services.
 
 The registry is the only place logical IDs meet Home Assistant entities. Clients
 see `living_room`; they never see or submit an entity ID, and a request carrying
@@ -48,10 +53,12 @@ name an entity it was never told about, because the vocabulary is server-side.
 | `web` | Unprivileged nginx. Serves the built PWA, reverse-proxies `/api/` and the event WebSocket same-origin. The only published service. |
 | `core` | FastAPI. Holds the HA token, the registry, the auth store and the policy engine. `expose`d internally, never published on the host. |
 | `roomos_internal` | Project-owned bridge network. Isolated by membership, but not Docker-`internal`, because Core needs outbound access to Home Assistant. |
-| `roomos_auth` | Named volume holding device records, sessions and the server secret. Created on first run. |
+| `roomos_auth` | Named volume holding device records, sessions, the server secret and all runtime state (scenes, routines, automations, alerts, push). Created on first run. |
 
-No bind mounts other than an optional read-only TLS pair, no Docker socket, no
-host networking, no privileged mode, no device passthrough.
+Core's other mounts are all read-only: the installation registry, and optionally
+the FCM service account, the VAPID key and a backup-status directory. Web gets
+only an optional TLS pair. No Docker socket, no host networking, no privileged
+mode, no device passthrough.
 
 Because the browser only ever reaches `web`, and `web` reaches `core` over the
 private network, there is no route from a client to the Home Assistant token
@@ -137,7 +144,8 @@ Node and service monitoring reads registry-declared entities and distinguishes
 three states that are often collapsed:
 
 - **available**, with a current value
-- **stale** — a value arrived, but older than five minutes
+- **stale** — a value arrived, but older than its cadence allows (three minutes
+  for CPU, RAM and temperature; 75 minutes for uptime)
 - **unavailable / unknown** — no usable value
 
 The UI renders unknown as unknown. A panel showing `0` for a sensor that stopped
@@ -150,18 +158,37 @@ ID, so monitoring does not become a side channel for the registry.
 
 Maintained, boring components rather than custom infrastructure: Home
 Assistant's own REST and WebSocket APIs, FastAPI with Pydantic and httpx, SQLite
-for the auth store, React with TypeScript and Vite, and unprivileged nginx. No
-message broker, no external database, no paid service.
+for the auth store and metrics history, React with TypeScript and Vite, Kotlin
+for Android, and unprivileged nginx. No message broker, no external database, no
+paid service.
 
-Core holds no application state beyond the registry it loaded at startup and the
-auth store. There is nothing to migrate and little to leak.
+Runtime state is a handful of small JSON documents and two SQLite files in one
+volume, each written atomically (`0600`, temp file + rename) and read back
+fail-closed: a corrupt document disables its feature rather than being guessed
+at.
+
+## Server-side engines
+
+Everything that decides or schedules runs in Core; clients only display and ask.
+
+| Engine | What it does |
+| --- | --- |
+| Scenes | Fixed scene catalog applied per light through the same policy as a direct command. The active scene is reconciled from live light state, not remembered. |
+| Routines | Time, sun-position and presence triggers that activate a scene. Each schedule slot is claimed once and survives a restart; concurrency is bounded. |
+| Automations | Condition trees over device, metric and time state with cooldowns, dry-run simulation and a bounded history that explains why a run did or did not act. |
+| Alerts | Host, service, DNS, device and resource rules with debounce, hysteresis and sustained windows; per-device profiles and snoozes. |
+| Notifications and push | Persisted incidents with dedupe and replay safety; delivery over FCM and Web Push from fixed templates, per-device preferences and quiet hours, delivery receipts. |
+| Device telemetry | Hosts from Home Assistant, a Windows workstation via HASS.Agent, and paired phones/tablets reporting only their own declared sensors. |
+| Metrics history | Bounded host-metric history and short forecasts for the trends views. |
 
 ## Client architecture
 
-The Web PWA is the reference client. Android and Wear OS are planned against the
-same Core API with no additional privileges — see
-[../android/README.md](../android/README.md) and
-[../wear/README.md](../wear/README.md).
+The Web PWA is the reference client, including a fixed wall-panel mode and an
+ambient screen. The native Android client uses the same Core API with a
+read-only pairing profile, stores its session in Android Keystore, receives
+push through device-bound FCM registration and reports its own telemetry — see
+[../android/README.md](../android/README.md). Wear OS is planned
+([../wear/README.md](../wear/README.md)).
 
 No client will ever receive a Home Assistant token or entity ID. That constraint
 is what keeps the Core API small enough to be worth auditing.
@@ -172,7 +199,7 @@ is what keeps the Core API small enough to be worth auditing.
   See [remote-access.md](remote-access.md).
 - **Rate limiting beyond pairing.** Pairing attempts are limited; general API
   traffic is not.
-- **Device classes beyond lighting.** The capability model generalises; nothing
-  else is wired up yet.
+- **Device control beyond lighting.** Monitoring, camera and presence are read
+  only; lights are the only thing RoomOS writes to.
 - **Certificate management.** TLS is an opt-in overlay with a certificate you
   supply.

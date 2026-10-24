@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Capabilities(BaseModel):
@@ -81,7 +81,7 @@ class GroupTargetFailure(BaseModel):
 
 class GroupCommandResult(BaseModel):
     accepted: bool
-    device_id: Literal["all_room_lights"] = "all_room_lights"
+    device_id: Literal["all_room_lights", "main_room_lights"] = "all_room_lights"
     succeeded: list[str] = Field(default_factory=list)
     failed: list[GroupTargetFailure] = Field(default_factory=list)
 
@@ -97,11 +97,12 @@ class SystemMetric(BaseModel):
     unit: str | None = None
     available: bool
     stale: bool
+    freshness: Literal["fresh", "stale", "unknown", "unavailable"]
     last_updated: datetime | None = None
 
 
 class SystemNode(BaseModel):
-    id: str
+    id: Literal["primary", "secondary"]
     name: str
     online: bool | None
     metrics: dict[str, SystemMetric]
@@ -110,18 +111,91 @@ class SystemNode(BaseModel):
 class ServiceStatus(BaseModel):
     id: str
     status: Literal["online", "offline", "unknown"]
+    health: Literal["healthy", "degraded", "offline", "unknown"]
     source: str
+    stale: bool = False
+    freshness: Literal["fresh", "stale", "unknown", "unavailable"]
+
+
+class DnsResolverStatus(BaseModel):
+    id: Literal["primary", "secondary"]
+    role: Literal["primary", "secondary"]
+    status: Literal["healthy", "degraded", "offline", "unknown"]
+    last_checked: datetime | None = None
+    response_time_ms: float | None = None
+    # 7I: transport evidence. attempts=2 means the first reply was lost and the retry answered.
+    attempts: int | None = None
+    lost_reply_rate_1h: float | None = None
+    p95_ms_1h: float | None = None
+
+
+class DnsClusterStatus(BaseModel):
+    status: Literal["healthy", "degraded", "offline", "unknown"]
+    primary: DnsResolverStatus
+    secondary: DnsResolverStatus
+    last_checked: datetime | None = None
 
 
 class SystemResponse(BaseModel):
-    """Nodes are keyed by the logical node IDs declared in the device registry."""
-
-    nodes: dict[str, SystemNode]
+    primary: SystemNode
+    secondary: SystemNode
     services: list[ServiceStatus]
+    dns_cluster: DnsClusterStatus
+
+
+class ReleaseInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    release: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    revision: str = Field(pattern=r"^(?:unknown|[0-9a-f]{40})$")
+    component: Literal["core"] = "core"
+
+
+class CameraStatus(BaseModel):
+    id: Literal["room_camera"] = "room_camera"
+    display_name: str = "Room Camera"
+    status: Literal["online", "offline", "unknown"]
+    detection_status: Literal["active", "paused", "offline", "unknown"]
+    frigate_health: Literal["healthy", "degraded", "offline", "unknown"]
+    last_person_event: datetime | None = None
+    last_person_event_freshness: Literal["recent", "stale", "none"] = "none"
+    snapshot_available: bool = False
+    live_view_available: bool = False
+    last_checked: datetime | None = None
+
+
+class CameraCatalog(BaseModel):
+    cameras: list[CameraStatus]
+
+
+# Every event type Core publishes on /api/v1/events. This Literal is the single source of
+# truth: shared/api/event.schema.json is generated from it (tools/export_event_schema.py)
+# and parity tests keep the schema, the emitting code and the Web union in step.
+EventType = Literal[
+    "roomos.connection",
+    "light.state_changed",
+    "scene.active_changed",
+    "system.metric_updated",
+    "system.snapshot_updated",
+    "system.service_updated",
+    "camera.updated",
+    "device.updated",
+    "alert.started",
+    "alert.resolved",
+    "alert.updated",
+    "activity.recorded",
+    "routine.changed",
+    "routine.deleted",
+    "routine.run_completed",
+    "routine.diagnostics",
+    "automation.changed",
+    "automation.deleted",
+    "automation.executed",
+]
 
 
 class RoomOSEvent(BaseModel):
-    type: str
+    type: EventType
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     device_id: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
@@ -159,6 +233,63 @@ class AuthStatus(BaseModel):
     device: AuthDevice | None = None
 
 
+class PairedClient(BaseModel):
+    """A paired RoomOS app (7D.4 Device Center). Deliberately minimal: an opaque ID, the
+    operator-entered name and coarse activity; never scopes, tokens or session data."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    name: str
+    app: Literal["web", "android", "unknown"]
+    paired_at: datetime
+    last_seen_at: datetime | None
+    active_session: bool
+    current: bool
+
+
+class PairedClientsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    clients: list[PairedClient]
+    last_seen_resolution_seconds: int
+    generated_at: datetime
+
+
 class PairingResult(BaseModel):
     authenticated: bool = True
     device: AuthDevice
+
+
+class NativePairingResult(BaseModel):
+    authenticated: bool = True
+    session_token: str
+    expires_at: datetime
+    device: AuthDevice
+
+
+class FcmRegistrationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    registration_token: str = Field(
+        min_length=32,
+        max_length=4096,
+        pattern=r"^[A-Za-z0-9_:\-]+$",
+    )
+
+
+class FcmRegistrationResponse(BaseModel):
+    provider: Literal["fcm"] = "fcm"
+    device_id: str
+    destination_id: str
+    registered_at: datetime
+    token_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    destination_enabled: bool
+    activated_at: datetime
+
+
+class ClientTelemetryAccepted(BaseModel):
+    """7D.3 ingest acknowledgement. No scopes, tokens, bindings or auth device IDs."""
+
+    model_config = ConfigDict(extra="forbid")
+    device_id: str
+    stale_after_seconds: int
+    received_at: datetime

@@ -1,7 +1,6 @@
 import logging
 
 from app.audit import command_audit
-from app.catalog import LIGHTS
 from app.config import Settings
 from app.main import app, get_settings, require_control_enabled
 from app.policy import PHYSICAL_ACTIONS, PRODUCTION_POLICY, writable_permissions
@@ -15,10 +14,20 @@ def production_settings(*, enabled: bool = True) -> Settings:
 
 
 def test_production_policy_is_fixed_and_group_is_power_only():
-    assert set(PRODUCTION_POLICY) == {light.id for light in LIGHTS} | {"all_room_lights"}
-    for light in LIGHTS:
-        assert PRODUCTION_POLICY[light.id] == PHYSICAL_ACTIONS
+    assert set(PRODUCTION_POLICY) == {
+        "room_main",
+        "room_2",
+        "room_3",
+        "room_4",
+        "desk_ambient",
+        "all_room_lights",
+        "main_room_lights",
+    }
+    for device_id in ("room_main", "room_2", "room_3", "room_4", "desk_ambient"):
+        assert PRODUCTION_POLICY[device_id] == PHYSICAL_ACTIONS
     assert PRODUCTION_POLICY["all_room_lights"] == frozenset({"power"})
+    # 7E.1: the four L530 room lights share power, brightness and colour temperature only.
+    assert PRODUCTION_POLICY["main_room_lights"] == frozenset({"power", "brightness", "temperature"})
 
 
 def test_health_publishes_exact_per_device_permissions(client):
@@ -52,14 +61,14 @@ def test_group_rejects_every_non_power_action_before_ha(client, fake_ha):
 
 def test_unavailable_device_is_rejected_before_service(client, fake_ha):
     fake_ha.states["light.living_room"]["state"] = "unavailable"
-    response = client.post("/api/v1/lights/living_room/power", json={"on": True})
+    response = client.post("/api/v1/lights/room_main/power", json={"on": True})
     assert response.status_code == 409
     assert fake_ha.calls == []
 
 
 def test_effect_requires_live_advertisement(client, fake_ha):
     fake_ha.states["light.living_room"]["attributes"]["effect_list"] = []
-    response = client.post("/api/v1/lights/living_room/effect", json={"effect": "Party"})
+    response = client.post("/api/v1/lights/room_main/effect", json={"effect": "Party"})
     assert response.status_code == 422
     assert fake_ha.calls == []
 
@@ -67,7 +76,7 @@ def test_effect_requires_live_advertisement(client, fake_ha):
 def test_kill_switch_overrides_production_policy(client, fake_ha):
     app.dependency_overrides.pop(require_control_enabled, None)
     app.dependency_overrides[get_settings] = lambda: production_settings(enabled=False)
-    response = client.post("/api/v1/lights/living_room/power", json={"on": True})
+    response = client.post("/api/v1/lights/room_main/power", json={"on": True})
     assert response.status_code == 403
     assert writable_permissions(production_settings(enabled=False)) == {}
     assert fake_ha.calls == []
@@ -75,10 +84,10 @@ def test_kill_switch_overrides_production_policy(client, fake_ha):
 
 def test_safe_audit_contains_logical_result_and_no_credentials(caplog):
     with caplog.at_level(logging.INFO, logger="roomos.audit"):
-        command_audit("living_room", "power", "success")
+        command_audit("room_main", "power", "success")
     rendered = caplog.text
     assert "timestamp=" in rendered
-    assert "target=living_room" in rendered
+    assert "target=room_main" in rendered
     assert "action=power" in rendered
     assert "result=success" in rendered
     assert "Authorization" not in rendered

@@ -1,0 +1,139 @@
+# RoomOS installation registry — EXAMPLE
+#
+# The single place where RoomOS logical IDs are mapped onto the Home Assistant
+# entities of one installation. Clients only ever see logical IDs (`room_main`,
+# `primary`, `room_camera`); entity IDs never leave Core.
+#
+# Every entity below is a placeholder and almost certainly does not exist in
+# your Home Assistant. Copy this file and map it to your own:
+#
+#   mkdir -p config
+#   cp core/app/installation.example.yaml config/installation.yaml
+#   $EDITOR config/installation.yaml
+#   echo "ROOMOS_INSTALLATION_HOST_PATH=$PWD/config/installation.yaml" >> .env
+#
+# Find entity IDs in Home Assistant under Developer tools -> States.
+# `config/installation.yaml` is git-ignored: it describes your home, not the project.
+#
+# The file is read once at startup. Logical IDs are part of the API contract;
+# keep them stable once clients have stored them.
+
+# ---------------------------------------------------------------------------
+# Lights
+# ---------------------------------------------------------------------------
+# Logical IDs are fixed by the API (`room_main`, `room_2`, `room_3`, `room_4`,
+# `desk_ambient`); map each to one of your lights. Kelvin bounds are validated
+# server-side per device: read them from the entity's min_color_temp_kelvin /
+# max_color_temp_kelvin attributes.
+lights:
+  room_main:
+    entity_id: light.living_room
+    name: Living Room
+    model: L530
+    min_kelvin: 2500
+    max_kelvin: 6500
+    supports_effects: true
+  room_2:
+    entity_id: light.bedroom
+    name: Bedroom
+    model: L530
+    min_kelvin: 2500
+    max_kelvin: 6500
+    supports_effects: true
+  room_3:
+    entity_id: light.kitchen
+    name: Kitchen
+    model: L530
+    min_kelvin: 2500
+    max_kelvin: 6500
+    supports_effects: true
+  room_4:
+    entity_id: light.hallway
+    name: Hallway
+    model: L530
+    min_kelvin: 2500
+    max_kelvin: 6500
+    supports_effects: true
+  desk_ambient:
+    entity_id: light.desk_ambient
+    name: Desk Ambient
+    model: L920
+    # A strip with a wider range than a bulb; ranges stay independent per device.
+    min_kelvin: 2500
+    max_kelvin: 9000
+    supports_effects: true
+
+# A Home Assistant group light that covers the main room lights. RoomOS reads it
+# but always expands commands to the member lights, so every member is checked and
+# reported on its own.
+light_group:
+  entity_id: light.all_lights
+  name: HA light group
+  # Members of the logical `main_room_lights` group (subset of `lights` above).
+  main_members: [room_main, room_2, room_3, room_4]
+  main_name: Main room lights
+
+# ---------------------------------------------------------------------------
+# Host monitoring
+# ---------------------------------------------------------------------------
+# Two monitored hosts with fixed logical IDs. Each role maps to one entity; the
+# API reports it as `<node>_<role>` (for example `primary_cpu`).
+#   sensor roles:        cpu, ram, disk, temperature, uptime, nextcloud
+#   binary_sensor roles: online, docker, cloudflared, tailscale, throttled, smart, portainer
+# `online` plus cpu, ram, disk, temperature and uptime are required.
+nodes:
+  primary:
+    name: Primary
+    entities:
+      cpu: sensor.primary_cpu
+      ram: sensor.primary_ram
+      disk: sensor.primary_disk
+      temperature: sensor.primary_temperature
+      uptime: sensor.primary_uptime
+      online: binary_sensor.primary_online
+      docker: binary_sensor.primary_docker
+      cloudflared: binary_sensor.primary_cloudflared
+      tailscale: binary_sensor.primary_tailscale
+      throttled: binary_sensor.primary_throttled
+      nextcloud: sensor.primary_nextcloud
+  secondary:
+    name: Secondary
+    entities:
+      cpu: sensor.secondary_cpu
+      ram: sensor.secondary_ram
+      disk: sensor.secondary_disk
+      temperature: sensor.secondary_temperature
+      uptime: sensor.secondary_uptime
+      online: binary_sensor.secondary_online
+      docker: binary_sensor.secondary_docker
+      smart: binary_sensor.secondary_smart
+      portainer: binary_sensor.secondary_portainer
+
+# Frigate NVR integration status, reported as the `frigate` service.
+frigate:
+  status: sensor.frigate_status
+  uptime: sensor.frigate_uptime
+
+# ---------------------------------------------------------------------------
+# Camera (logical ID `room_camera`)
+# ---------------------------------------------------------------------------
+# status:         OK / PAUSED / WARNING / CRITICAL / ERROR / OFFLINE / FAILED
+# last_person:    input_datetime set when a person is detected
+# last_person_id: input_text with the detection event id
+# image:          image entity holding the latest person snapshot
+camera:
+  status: sensor.camera_status
+  last_person: input_datetime.camera_last_person
+  last_person_id: input_text.camera_last_person_id
+  image: image.camera_person
+
+# ---------------------------------------------------------------------------
+# Routines
+# ---------------------------------------------------------------------------
+# person:  the `person` entity whose home/away state drives presence routines
+# tracker: a device_tracker observed (never used as a trigger) to explain presence
+# solar:   the sun entity used for sunrise/sunset transitions
+presence:
+  person: person.resident
+  tracker: device_tracker.phone
+  solar: sun.sun

@@ -1,14 +1,14 @@
 import type { CSSProperties, ReactNode } from 'react'
 import { Icon, type IconName } from './Icons'
 import { formatValue } from '../ui'
-import type { CommandFeedback, RealtimeStatus } from '../types'
+import type { CommandFeedback, RealtimeStatus, TelemetryFreshness } from '../types'
 
 export function PageHeader({ eyebrow, title, subtitle, children }: { eyebrow: string; title: string; subtitle?: string; children?: ReactNode }) {
   return <header className="page-header"><div className="page-heading"><p className="eyebrow">{eyebrow}</p><h1>{title}</h1>{subtitle && <p className="page-subtitle">{subtitle}</p>}</div>{children}</header>
 }
 
-export function StatusPill({ status, label }: { status: 'online' | 'offline' | 'unknown' | 'stale' | 'locked'; label?: string }) {
-  const fallback = status === 'online' ? 'Online' : status === 'offline' ? 'Offline' : status === 'stale' ? 'Stale' : status === 'locked' ? 'Locked' : 'Unknown'
+export function StatusPill({ status, label }: { status: 'healthy' | 'degraded' | 'online' | 'offline' | 'unknown' | 'stale' | 'locked'; label?: string }) {
+  const fallback = status === 'healthy' ? 'Healthy' : status === 'degraded' ? 'Degraded' : status === 'online' ? 'Online' : status === 'offline' ? 'Offline' : status === 'stale' ? 'Stale' : status === 'locked' ? 'Locked' : 'Unknown'
   return <span className={`status-pill ${status}`}><span className="status-indicator" />{label ?? fallback}</span>
 }
 
@@ -18,7 +18,7 @@ export function State({ value, stale = false }: { value: boolean | null; stale?:
 }
 
 export function RealtimePill({ status }: { status: RealtimeStatus }) {
-  return <StatusPill status={status === 'connected' ? 'online' : status === 'disconnected' ? 'offline' : 'unknown'} label={status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting' : 'Disconnected'} />
+  return <StatusPill status={status === 'connected' ? 'online' : status === 'offline' ? 'offline' : 'unknown'} label={status === 'connected' ? 'Live' : status === 'reconnecting' ? 'Reconnecting' : 'Offline'} />
 }
 
 export function ErrorPanel({ message }: { message: string }) {
@@ -30,12 +30,14 @@ export function CommandNotice({ feedback, onDismiss }: { feedback: CommandFeedba
   return <div className={`notice command ${feedback.tone}`} role={feedback.tone === 'error' || feedback.tone === 'partial' ? 'alert' : 'status'}><span className="notice-icon">{feedback.tone === 'pending' ? '…' : feedback.tone === 'success' ? '✓' : feedback.tone === 'partial' ? '!' : '×'}</span><div><strong>{feedback.title}</strong>{feedback.detail && <p>{feedback.detail}</p>}</div>{onDismiss && feedback.tone !== 'pending' && <button className="notice-dismiss" onClick={onDismiss} aria-label="Dismiss">×</button>}</div>
 }
 
-export function Metric({ label, value, unit, stale, icon, progress }: { label: string; value: unknown; unit?: string | null; stale?: boolean; icon?: IconName; progress?: number | null }) {
+export function Metric({ label, value, unit, freshness = 'unknown', icon, progress, updatedAt }: { label: string; value: unknown; unit?: string | null; freshness?: TelemetryFreshness; icon?: IconName; progress?: number | null; updatedAt?: string | null }) {
   const safeProgress = progress === null || progress === undefined ? null : Math.max(0, Math.min(100, progress))
-  return <div className={`metric-tile ${stale ? 'is-stale' : ''}`} style={safeProgress === null ? undefined : { '--metric-progress': `${safeProgress}%` } as CSSProperties}>
-    <div className="metric-label">{icon && <Icon name={icon} />}<span>{label}</span>{stale && <span className="stale-tag">Stale</span>}</div>
+  const freshnessLabel = freshness === 'fresh' ? 'Fresh' : freshness === 'stale' ? 'Stale' : freshness === 'unavailable' ? 'Unavailable' : 'Unknown'
+  return <div className={`metric-tile is-${freshness}`} style={safeProgress === null ? undefined : { '--metric-progress': `${safeProgress}%` } as CSSProperties}>
+    <div className="metric-label">{icon && <Icon name={icon} />}<span>{label}</span><span className={`freshness-tag is-${freshness}`}>{freshnessLabel}</span></div>
     <strong>{formatValue(value, unit)}</strong>
     {safeProgress !== null && <div className="metric-bar"><span /></div>}
+    {updatedAt && <small className="metric-updated">State changed {new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(updatedAt))}</small>}
   </div>
 }
 

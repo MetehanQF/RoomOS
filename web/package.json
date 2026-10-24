@@ -1,8 +1,7 @@
 {
   "name": "roomos-web",
   "private": true,
-  "version": "0.1.0",
-  "license": "Apache-2.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -27,6 +26,7 @@
     "eslint-plugin-react-hooks": "latest",
     "eslint-plugin-react-refresh": "latest",
     "globals": "latest",
+    "jsdom": "^27.4.0",
     "typescript-eslint": "latest",
     "vitest": "^5.0.2"
   }

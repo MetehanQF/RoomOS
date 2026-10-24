@@ -27,8 +27,8 @@ const capabilities = {
 
 function light(overrides: Partial<Light> = {}): Light {
   return {
-    id: 'living_room',
-    name: 'Living Room',
+    id: 'room_main',
+    name: 'Main light',
     type: 'light',
     available: true,
     on: false,
@@ -52,11 +52,13 @@ function health(overrides: Partial<Health> = {}): Health {
     live_connection_enabled: true,
     control_enabled: true,
     control_policy: 'production',
-    writable_device_ids: ['living_room'],
+    writable_device_ids: ['room_main'],
     writable_actions: ['power', 'brightness', 'color', 'temperature', 'effect'],
     writable_permissions: {
-      living_room: ['power', 'brightness', 'color', 'temperature', 'effect'],
+      room_main: ['power', 'brightness', 'color', 'temperature', 'effect'],
     },
+    alerts: { status: 'unknown', active_count: 0, highest_severity: null },
+    notifications: { status: 'disabled', configured_providers: 0, configured_destinations: 0, pending_count: 0, failed_count: 0, external_attempts: 0, external_deliveries: 0, last_delivery: null },
     ...overrides,
   }
 }
@@ -130,27 +132,14 @@ describe('command and realtime state UX', () => {
   })
 
   it('reports a partial group response with the failed friendly lights', () => {
-    const feedback = describeGroupResult(
-      {
-        accepted: false,
-        device_id: 'all_room_lights',
-        succeeded: ['living_room', 'bedroom', 'kitchen', 'hallway'],
-        failed: [{ device_id: 'desk_ambient', reason: 'service_failed' }],
-      },
-      { desk_ambient: 'Desk Ambient' },
-    )
-    expect(feedback.tone).toBe('partial')
-    expect(feedback.detail).toBe('Desk Ambient')
-  })
-
-  it('falls back to the logical ID when Core reported no name for it', () => {
     const feedback = describeGroupResult({
       accepted: false,
       device_id: 'all_room_lights',
-      succeeded: ['living_room'],
-      failed: [{ device_id: 'desk_ambient', reason: 'unavailable' }],
+      succeeded: ['room_main', 'room_2', 'room_3', 'room_4'],
+      failed: [{ device_id: 'desk_ambient', reason: 'service_failed' }],
     })
-    expect(feedback.detail).toBe('desk_ambient')
+    expect(feedback.tone).toBe('partial')
+    expect(feedback.detail).toBe('Desk ambient')
   })
 
   it('applies an allowed realtime light update without a page refresh', () => {
@@ -158,10 +147,10 @@ describe('command and realtime state UX', () => {
     const event: RoomOSEvent = {
       type: 'light.state_changed',
       timestamp: '2026-09-27T12:01:00Z',
-      device_id: 'living_room',
+      device_id: 'room_main',
       data: { light: updated },
     }
-    expect(applyLightEvent([light(), light({ id: 'bedroom' })], event)).toEqual([updated, light({ id: 'bedroom' })])
+    expect(applyLightEvent([light(), light({ id: 'room_2' })], event)).toEqual([updated, light({ id: 'room_2' })])
   })
 
   it('ignores unrelated realtime events', () => {

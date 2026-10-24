@@ -1,35 +1,51 @@
-# RoomOS Android client (planned)
+# RoomOS Android client
 
-Not implemented in v0.1.0. This records the intended architecture so the Core API
-stays a workable target.
+Native read-only RoomOS client for Android phones and tablets.
 
-## Approach
+- Package: `com.metehantech.roomos`
+- Minimum SDK: 26 (Android 8.0)
+- Target/compile SDK: 36 (Android 16)
+- UI: Kotlin + Jetpack Compose + Material 3
+- Network boundary: only your RoomOS origin and its WSS endpoint (see *Your server* below)
+- Session: revocable RoomOS native bearer session encrypted with a non-exportable
+  Android Keystore AES/GCM key; ciphertext is kept in `noBackupFilesDir`
+- Backup: disabled; session material is never migrated to another device
+- Notifications: Firebase Messaging registration is bound to the existing
+  native RoomOS device session; warning and critical messages use separate
+  Android channels
 
-Kotlin with Jetpack Compose, consuming the RoomOS Core REST API at `/api/v1` and
-the RoomOS event WebSocket.
+The client has no light/routine write actions. Native pairing uses an
+operator-created `android-readonly` one-time pairing window and receives only
+`lights:read`, `system:read`, `camera:read`, `activity:read`, and
+`routines:read`. The FCM token is sent only to the fixed RoomOS registration
+endpoint over that bearer session; it is never rendered or logged. Declining
+Android notification permission does not block the rest of the app.
 
-**The phone client must never contact Home Assistant and must never store a Home
-Assistant credential.** It talks to Core and nothing else — the same constraint
-the web client already meets, and what keeps the Core API small enough to audit.
+## Your server
 
-## Design rules
+The app talks to exactly one origin, fixed at build time. Before building, set
+your host in both places:
 
-- Address devices by stable RoomOS logical IDs. Never accept or construct a Home
-  Assistant entity ID.
-- Render controls from the capabilities Core reports, not a hardcoded device
-  list. The server already decides what is possible.
-- Treat Core's permission response as authoritative. A locally enabled button is
-  not permission.
-- Surface unavailable and stale state honestly, as the web client does.
+- `app/src/main/java/com/metehantech/roomos/network/RoomOsApiClient.kt` —
+  `PRODUCTION_ORIGIN`
+- `app/src/main/res/xml/network_security_config.xml` — the `<domain>` entry
 
-## Authentication
+It must match `ROOMOS_AUTH_ALLOWED_ORIGIN` on the server exactly.
 
-Reuse the existing device-authentication model rather than inventing a second
-one: pair with a single-use code, hold a session, carry the same scopes, and
-appear in `roomos devices list` so it can be revoked like any other device.
+## Building
 
-A native client stores its session differently from a browser cookie jar. It
-should use the platform keystore, and must not fall back to plain shared
-preferences.
+Build tooling is intentionally not part of production Compose. Use JDK 17,
+Gradle 8.13, Android SDK 36, and:
 
-See [../docs/authentication.md](../docs/authentication.md).
+```bash
+./gradlew testInternalUnitTest lintInternal assembleInternal
+```
+
+Internal APK output: `app/build/outputs/apk/internal/app-internal.apk`.
+
+Push needs your own Firebase project: place its `google-services.json` in `app/`
+(git-ignored). The Gradle build refuses to run without that file; to build and
+test without push, a placeholder project file for the package names
+`com.metehantech.roomos` and `com.metehantech.roomos.internal` is enough. Keep it and any signing material outside Git. The internal build
+uses the `.internal` application ID suffix; sign release builds with your own
+key.

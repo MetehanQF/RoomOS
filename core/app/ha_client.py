@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Sequence
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -9,6 +11,9 @@ import websockets
 from .config import Settings
 
 logger = logging.getLogger(__name__)
+
+HISTORY_MAX_BYTES = 2 * 1024 * 1024
+HISTORY_TIMEOUT_SECONDS = 5.0
 
 
 class HomeAssistantError(RuntimeError):
@@ -64,6 +69,80 @@ class HomeAssistantClient:
             entity_id: result if isinstance(result, dict) else None
             for entity_id, result in zip(entity_ids, results, strict=True)
         }
+
+    async def get_history(
+        self,
+        entity_ids: Sequence[str],
+        start: datetime,
+        end: datetime,
+        *,
+        max_bytes: int = HISTORY_MAX_BYTES,
+        timeout_seconds: float = HISTORY_TIMEOUT_SECONDS,
+    ) -> list[list[dict[str, Any]]]:
+        """Read-only bounded recorder history. GET only; never shares the service-call path."""
+
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                async with self._http.stream(
+                    "GET",
+                    f"{self.settings.ha_rest_url}/api/history/period/{start.isoformat()}",
+                    headers=self._headers(),
+                    params={
+                        "filter_entity_id": ",".join(entity_ids),
+                        "end_time": end.isoformat(),
+                        "minimal_response": "",
+                        "no_attributes": "",
+                        "significant_changes_only": "0",
+                    },
+                    timeout=httpx.Timeout(timeout_seconds, connect=3.0),
+                ) as response:
+                    response.raise_for_status()
+                    declared = response.headers.get("content-length")
+                    if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+                        raise HomeAssistantUnavailable("History response is too large")
+                    payload = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        payload.extend(chunk)
+                        if len(payload) > max_bytes:
+                            raise HomeAssistantUnavailable("History response is too large")
+            data = json.loads(payload)
+            if not isinstance(data, list) or not all(isinstance(series, list) for series in data):
+                raise HomeAssistantUnavailable("History response is malformed")
+            self.connected = True
+            return data
+        except HomeAssistantUnavailable:
+            raise
+        except (TimeoutError, httpx.HTTPError, ValueError) as exc:
+            logger.warning("Home Assistant history request failed (%s)", type(exc).__name__)
+            raise HomeAssistantUnavailable("Home Assistant history is unavailable") from None
+
+    async def get_image(self, entity_id: str, *, max_bytes: int = 5 * 1024 * 1024) -> tuple[bytes, str] | None:
+        try:
+            async with self._http.stream(
+                "GET",
+                f"{self.settings.ha_rest_url}/api/image_proxy/{entity_id}",
+                headers=self._headers(),
+            ) as response:
+                if response.status_code in {404, 503}:
+                    self.connected = True
+                    return None
+                response.raise_for_status()
+                media_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+                if media_type not in {"image/jpeg", "image/png", "image/webp"}:
+                    raise HomeAssistantUnavailable("Camera image is unavailable")
+                payload = bytearray()
+                async for chunk in response.aiter_bytes():
+                    payload.extend(chunk)
+                    if len(payload) > max_bytes:
+                        raise HomeAssistantUnavailable("Camera image is unavailable")
+                self.connected = True
+                return bytes(payload), media_type
+        except HomeAssistantUnavailable:
+            raise
+        except httpx.HTTPError as exc:
+            self.connected = False
+            logger.warning("Home Assistant image request failed (%s)", type(exc).__name__)
+            raise HomeAssistantUnavailable("Home Assistant is unavailable") from None
 
     async def call_service(
         self, domain: str, service: str, payload: dict[str, Any]

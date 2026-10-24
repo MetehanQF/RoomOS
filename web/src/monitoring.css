@@ -1,0 +1,45 @@
+/* 7J: information hierarchy, not smaller control targets. */
+.device-overview-list { display: grid; gap: 10px; }
+.device-overview-row { display: flex; align-items: center; gap: 14px; padding: 18px; color: inherit; text-decoration: none; min-width: 0; border-left: 3px solid transparent; }
+.device-overview-row:hover,.device-overview-row:focus-visible { border-color: #aa88ff; }
+.device-overview-row.is-critical { border-left-color: #ff6a87; }
+.device-overview-row.is-warning { border-left-color: #eebc63; }
+.device-row-icon { color: #ba9aff; flex: 0 0 28px; }
+.device-row-main { flex: 1; min-width: 0; }
+.device-row-main h2 { font-size: 16px; margin: 0 0 5px; overflow-wrap: anywhere; }
+.device-row-main small,.device-row-status small { color: #a69dbb; font-size: 11px; }
+.device-row-metrics { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 12px; color: #aaa0bc; }
+.device-row-metrics strong { color: #ece5fa; }
+.device-row-status { display: flex; align-items: flex-end; flex-direction: column; gap: 7px; }
+.device-row-detail { font-size: 12px; color: #c9b4ff; }
+.alert-count { font-size: 12px; color: #eebc63; }
+.alert-count.is-critical { color: #ff829c; font-weight: 700; }
+.paired-apps-fold { padding: 0 16px; }
+.paired-apps-fold > summary { min-height: 52px; display: flex; align-items: center; cursor: pointer; }
+.monitor-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0 16px; }
+.monitor-tabs a { padding: 14px 16px; min-height: 48px; display: inline-flex; align-items: center; color: #b7abc9; text-decoration: none; border-radius: 10px; }
+.monitor-tabs a[aria-current="page"] { color: #f2eaff; background: #49306d; }
+.monitor-tabs a:focus-visible { outline: 2px solid #b99af9; }
+.monitor-detail-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); gap: 12px; }
+.monitor-notice { color: #b4a9c4; padding: 16px; }
+.monitor-back { display: inline-flex; min-height: 48px; align-items: center; color: #c7aff9; }
+.metric-history { margin-top: 16px; padding: 18px; }
+.metric-history header { display: flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; }
+.metric-history select,.metric-history button,.metric-history summary { min-height:48px; }
+.metric-history select { background:#241833; color:#eee5fc; padding:10px; border:1px solid #776188; border-radius:8px; }
+.metric-history svg { width:100%; height:160px; }
+.metric-history p,.metric-history small { color:#b4a9c4; }
+.history-table { max-height:320px; overflow:auto; }
+.history-table table { width:100%; font-size:12px; text-align:left; }
+.infrastructure-summary,.infrastructure-node { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:18px; color:inherit; text-decoration:none; }
+.infrastructure-summary h2 { margin:4px 0; text-transform:capitalize; }
+.infrastructure-summary a { color:#cab5fa; }
+.infrastructure-summary small { display:block;color:#b2a6c2; }
+.infrastructure-nodes,.infrastructure-signals { display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px;margin:12px 0; }
+.infrastructure-node h3 { font-size:15px;margin:0; }
+.infrastructure-node span { font-size:12px;color:#b9a7d2; }
+.infrastructure-alert { display:flex;flex-direction:column;gap:6px;padding:16px;margin:10px 0;color:#eabb6e;text-decoration:none; }
+.infrastructure-alert.is-critical { color:#ff91a7; }
+.monitor-pagination { display:flex;align-items:center;justify-content:space-between;gap:8px; }
+.monitor-pagination button,section[aria-label="System events"] select { min-height:48px; }
+@media(max-width:480px) { .device-overview-row { gap: 9px; padding: 14px 10px; } .device-row-icon { display: none; } .device-row-main h2 { font-size: 14px; } .device-row-status { max-width: 105px; } .device-overview { display:grid;grid-template-columns:repeat(4,1fr); } .device-overview > div { min-width:0; } .device-overview span { font-size:10px; } }

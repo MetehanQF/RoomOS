@@ -188,13 +188,16 @@ Both services run with:
 - `pids_limit`, `mem_limit`, `cpus` caps
 - Bounded json-file logging
 
-No Docker socket, no host filesystem mount other than an optional read-only TLS
-pair, no host networking, no privileged mode. Core is not published on the host.
+No Docker socket, no host networking, no privileged mode. Host mounts are
+read-only: the installation registry and optional push credentials and backup
+status for Core, an optional TLS pair for Web. Core is not published on the host.
 
 ## PWA transport boundary
 
 The web client ships a manifest, local icons, standalone metadata and a
-deliberately **network-only** service worker with no Cache Storage logic.
+deliberately **network-only** service worker with no Cache Storage logic. Its
+only other job is Web Push: it displays the notification Core rendered and opens
+the app on tap. It never stores the payload.
 
 Live API responses and control state are never served from an offline cache. A
 cached control surface is actively harmful: it can show a light as on after it
@@ -203,6 +206,38 @@ would rather show a disconnected indicator than a confident lie.
 
 A secure origin is required for the service worker, which is another reason to
 run the TLS overlay.
+
+## Push notifications
+
+- The FCM service account and the VAPID private key are mounted read-only into
+  Core only. Clients never receive either.
+- There is no endpoint that sends arbitrary text. Notifications are rendered in
+  Core from fixed templates for known alert types; titles and bodies carry
+  logical labels, never entity IDs, addresses or paths.
+- Lock-screen detail is opt-in per device. With it off, the visible notification
+  is a generic "open RoomOS" text and the detail stays inside the app.
+- FCM registrations are bound to the paired device that created them; a revoked
+  device's registration is dropped. Web Push endpoints are accepted only from an
+  allowlist of push-service hosts.
+- Delivery uses a persisted outbox with dedupe, so a restart never replays an
+  old alert as new.
+
+## Camera
+
+RoomOS reads camera status from Home Assistant and exposes one logical camera.
+The snapshot endpoint serves only the latest person image, only while the
+detection is recent, with `Cache-Control: no-store`, same-origin, behind
+`camera:read`. Live streaming is not provided.
+
+## Device telemetry
+
+A client can report only its own telemetry (`telemetry:write:self`), only for
+the catalog device it was bound to by the operator, and only the sensors that
+device declares; anything else is dropped and counted. The latest values are
+an in-memory cache that starts empty on every Core start; a fixed set of numeric
+metrics (CPU, RAM, GPU, disk, storage, battery, temperatures) is also kept in a
+bounded, downsampled SQLite history for the trends views. Location is
+deliberately not a telemetry sensor and is never stored.
 
 ## Emergency read-only rollback
 

@@ -1,10 +1,11 @@
 # Configuring RoomOS
 
-Everything deployment-specific is environment-driven or lives in a device
+Everything deployment-specific is environment-driven or lives in an installation
 registry you own. Nothing about your house belongs in tracked source.
 
 Set variables in `.env` at the repository root. `.env` is git-ignored; keep it
-mode `0600`.
+mode `0600`. `.env.example` lists the values you will normally set; this page
+lists the rest.
 
 ## Home Assistant
 
@@ -12,110 +13,63 @@ mode `0600`.
 | --- | --- | --- |
 | `HA_URL` | `http://homeassistant.local:8123` | Base URL, as reachable from the Core container. |
 | `HA_TOKEN` | _empty_ | Long-lived token for a dedicated HA user. Held only by Core, wrapped in `SecretStr`, never sent to a client. |
+| `ROOMOS_HA_CONNECT_ENABLED` | `false` | Open the live REST/WebSocket connection. Reads only. |
+| `ROOMOS_HA_RECONNECT_MIN_SECONDS` | `1` | Initial reconnect backoff. |
+| `ROOMOS_HA_RECONNECT_MAX_SECONDS` | `60` | Backoff ceiling. |
 
 With `HA_TOKEN` empty Core still starts and serves `/api/v1/health`, reporting
 `not_configured` and making no Home Assistant calls. That is a valid development
 state.
 
-## Device registry
+## Installation registry
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `ROOMOS_DEVICE_REGISTRY` | bundled example | Path to your registry YAML. |
+| `ROOMOS_INSTALLATION_HOST_PATH` | bundled example | Host path Compose mounts read-only into Core. |
+| `ROOMOS_INSTALLATION_PATH` | bundled example | Path inside Core. Compose sets it; set it yourself only outside Compose. |
 
-The bundled example maps entities that do not exist, so a fresh checkout is safe
-but inert.
+The registry is the single place where RoomOS logical IDs are mapped onto your
+Home Assistant entities. Clients only ever see logical IDs (`room_main`,
+`primary`, `room_camera`); entity IDs never leave Core and are refused if a client
+submits one.
 
 ```bash
-cp core/app/devices.example.yaml config/devices.yaml
-$EDITOR config/devices.yaml
-echo "ROOMOS_DEVICE_REGISTRY=$PWD/config/devices.yaml" >> .env
+cp core/app/installation.example.yaml config/installation.yaml
+$EDITOR config/installation.yaml
+echo "ROOMOS_INSTALLATION_HOST_PATH=$PWD/config/installation.yaml" >> .env
 ```
 
-### Schema
+The bundled example maps entities that do not exist, so a fresh checkout is safe
+but inert, and Core logs a warning while it is in use. The example file is the
+reference: every key is commented there.
 
-```yaml
-devices:
-  living_room:
-    entity_id: light.your_entity_here
-    name: Living Room
-    min_kelvin: 2500
-    max_kelvin: 6500
-    supports_effects: true
+### Sections
 
-group:
-  excluded_entity_id: light.your_ha_group_here
-
-nodes:
-  primary:
-    name: Primary Node
-    entities:
-      - sensor.primary_cpu
-      - binary_sensor.primary_online
-
-services:
-  - id: home_assistant
-    source: RoomOS HA API
-  - id: container_runtime
-    entity_id: binary_sensor.primary_container_runtime
-    source: Primary node binary sensor
-```
-
-#### `devices`
-
-Each key is a logical device ID exposed to clients. Treat them as stable:
-renaming one is a breaking change for anything that stored it.
-
-| Field | Required | Description |
+| Section | Logical IDs | What you map |
 | --- | --- | --- |
-| `entity_id` | yes | The Home Assistant entity. Never leaves Core. |
-| `name` | no | Display name sent to clients. Defaults to a title-cased ID. |
-| `min_kelvin` / `max_kelvin` | no | Bounds for `temperature`, validated server-side. Default 2500–6500. |
-| `supports_effects` | no | `false` refuses effects regardless of what the device reports. Default `true`. |
+| `lights` | `room_main`, `room_2`, `room_3`, `room_4`, `desk_ambient` | One `light.*` entity each, display name, Kelvin range, whether effects are allowed. |
+| `light_group` | `main_room_lights` | An HA group light covering the main lights (read only) and which logical lights belong to the group. |
+| `nodes` | `primary`, `secondary` | Per host, a role → entity map. Sensor roles: `cpu`, `ram`, `disk`, `temperature`, `uptime`, `nextcloud`. Binary roles: `online`, `docker`, `cloudflared`, `tailscale`, `throttled`, `smart`, `portainer`. `online` and the five numeric roles are required. |
+| `frigate` | service `frigate` | Frigate integration `status` and `uptime` sensors. |
+| `camera` | `room_camera` | Status sensor, last-person `input_datetime` and `input_text`, snapshot `image` entity. |
+| `presence` | routine triggers | The `person` entity for home/away, a `device_tracker` used only as evidence, the `sun` entity. |
 
-Every listed device becomes a member of the RoomOS-owned `all_room_lights`
-group.
+The API reports host metrics as `<node>_<role>` (`primary_cpu`), whatever your
+entity is called. Logical IDs are part of the API contract; renaming one is a
+breaking change for anything that stored it, so they are fixed by the code and
+only the mapping and display names come from the file.
 
-#### `group`
+### Validation
 
-Optional. If Home Assistant has a group entity covering the same lights, name it
-as `excluded_entity_id`. RoomOS records it specifically to keep it out of the
-writable surface — the group is expanded per device instead, which is what makes
-partial-failure reporting possible.
-
-#### `nodes`
-
-Optional host monitoring. Use generic IDs (`primary`, `secondary`), not
-hostnames: these appear in API routes and are sent to clients.
-
-Metric keys are the entity ID minus its domain, so `sensor.primary_cpu` becomes
-metric `primary_cpu`. The UI looks for `<node>_cpu`, `_ram`, `_disk`,
-`_temperature`, `_uptime`, and uses `<node>_online` as the node state. Anything
-else you list is still exposed by the API. Omit the section for no monitoring.
-
-#### `services`
-
-Optional service health strip.
-
-| Field | Required | Description |
-| --- | --- | --- |
-| `id` | yes | Logical service ID shown to clients. |
-| `entity_id` | no | Backing binary sensor. Omit for a static entry. |
-| `source` | no | Human-readable provenance label. |
-
-`source` must never contain a Home Assistant entity ID — it is sent to the
-browser.
-
-### Applying changes
-
-The registry is read once at startup:
+The registry is read once at startup and validated strictly: a missing required
+key, an entity in the wrong domain (`switch.*` where a `light.*` is expected), two
+logical lights on one entity, or one entity mapped to two host roles stops Core
+at boot with a message naming the key. RoomOS never starts with a partial
+mapping. Apply a change with:
 
 ```bash
 docker compose up -d --no-deps --force-recreate core
 ```
-
-A malformed registry stops Core at boot rather than starting with a partial
-device list.
 
 ## Exposure
 
@@ -142,24 +96,33 @@ on the host; it is reachable only from `web` over the private Docker network.
 | `ROOMOS_AUTH_PAIRING_TTL_SECONDS` | `600` | Pairing window lifetime. 60–1800. |
 | `ROOMOS_AUTH_PAIRING_ATTEMPTS` | `5` | Attempts allowed per window. 1–20. |
 | `ROOMOS_AUTH_PAIRING_WINDOW_SECONDS` | `300` | Rate-limit window. 60–1800. |
-| `ROOMOS_AUTH_DATABASE_PATH` | `data/roomos-auth.db` | Device and session store. A named volume under Compose. |
-| `ROOMOS_AUTH_SECRET_PATH` | `data/server-secret` | Server secret, generated at first run, mode `0600`. |
 
 The origin and host are compared exactly, with no wildcards. If the name your
 clients use changes, update both. Details in
 [authentication.md](authentication.md).
 
-Never commit the auth database or server secret. `data/`, `*.db` and
-`server-secret` are git-ignored.
+## Runtime state
 
-## Runtime
+Everything Core persists lives in one directory, `/var/lib/roomos-auth`, a named
+Compose volume mounted into Core and no other container: the device and session
+database, the server secret, scenes, routines, automations and their history,
+alerts, notification state, the push registry and outbox, panel layouts and the
+metrics history. Each file has its own `ROOMOS_*_PATH` override, which you should
+not normally need. Files are created `0600` in a `0700` directory.
+
+Never commit, bake into an image or share this directory: it contains
+authentication secrets. Back it up only encrypted — see [Backups](#backups).
+
+## Time
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `ROOMOS_LOG_LEVEL` | `INFO` | Standard Python log level. |
-| `ROOMOS_HA_CONNECT_ENABLED` | `false` | Open the live REST/WebSocket connection. Reads only. |
-| `ROOMOS_HA_RECONNECT_MIN_SECONDS` | `1` | Initial reconnect backoff. |
-| `ROOMOS_HA_RECONNECT_MAX_SECONDS` | `60` | Backoff ceiling. |
+| `ROOMOS_ROUTINES_TIMEZONE` | `UTC` | IANA zone of the installation. Drives routine schedules and sunset transitions, and how naive Home Assistant `input_datetime` values (camera events) are read. |
+| `ROOMOS_PUSH_TIMEZONE` | `UTC` | Zone used for push quiet hours. |
+
+The Web client currently formats times in a fixed zone defined in its source
+(`Europe/Istanbul`). Making it follow the installation zone is a known
+limitation.
 
 ## Enabling control
 
@@ -172,10 +135,10 @@ Never commit the auth database or server secret. `data/`, `*.db` and
 
 Two independent gates must both open before a write succeeds: the kill switch,
 and the policy. That separation means returning to safety is one variable, not
-an audit of your scope lists.
-
-A device's scopes are a third, earlier gate — see
-[authentication.md](authentication.md#scopes).
+an audit of your scope lists. A device's scopes are a third, earlier gate — see
+[authentication.md](authentication.md#scopes). Scenes, routines and automations
+go through the same policy as a direct command; none of them can do what the
+policy would refuse.
 
 ### Policy modes
 
@@ -191,13 +154,12 @@ ROOMOS_CONTROL_DEVICE_IDS=desk_ambient
 ROOMOS_CONTROL_ACTIONS=power,brightness
 ```
 
-**`production`** — every registered device gets the full action set, and
-`all_room_lights` is restricted to `power`. The scope lists are ignored, so a
-typo in them cannot widen production permissions.
+**`production`** — every registered light gets the full action set,
+`main_room_lights` gets power, brightness and colour temperature, and
+`all_room_lights` is restricted to power. The scope lists are ignored, so a typo
+in them cannot widen production permissions.
 
-The group stays power-only on purpose: a brightness or colour sweep across a
-whole room is rarely what someone meant to press, and a partial failure
-mid-sweep is hard to reason about.
+Groups are expanded per member, so a partial failure is reported per target.
 
 ### Actions
 
@@ -219,17 +181,8 @@ device decides what is possible.
 curl -s http://127.0.0.1:5500/api/v1/health
 ```
 
-```json
-{
-  "control_enabled": true,
-  "control_policy": "scoped",
-  "writable_device_ids": ["desk_ambient"],
-  "writable_actions": ["brightness", "power"],
-  "writable_permissions": { "desk_ambient": ["brightness", "power"] }
-}
-```
-
-Trust this over the UI. The browser renders what it was told; Core enforces.
+Trust `writable_permissions` in that response over the UI. The browser renders
+what it was told; Core enforces.
 
 ### Returning to read-only
 
@@ -241,3 +194,88 @@ ROOMOS_CONTROL_ENABLED=false
 ```bash
 docker compose up -d --no-deps --force-recreate core
 ```
+
+## Push notifications
+
+Optional. Two transports, both server-driven: Firebase Cloud Messaging for the
+Android client and Web Push (VAPID) for the PWA.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ROOMOS_PUSH_MODE` | `legacy` | `legacy`: only the fixed node/service/temperature incident notifications. `smart`: delivery driven by the alert engine and each device's preferences. |
+| `ROOMOS_FCM_ENABLED` | `false` | Enable the FCM provider. |
+| `ROOMOS_FCM_CREDENTIALS_HOST_PATH` | _empty_ | Host path to a Firebase service-account JSON. Mounted read-only into Core only. |
+| `ROOMOS_WEBPUSH_VAPID_HOST_PATH` | _empty_ | Host path to the VAPID private key (PEM). Mounted read-only into Core only. |
+| `ROOMOS_WEBPUSH_VAPID_SUBJECT` | `https://roomos.example.com` | VAPID `sub` claim; use your own origin. |
+| `ROOMOS_WEBPUSH_EXTRA_ENDPOINT_HOSTS` | _empty_ | Extra push-service hosts to accept besides the built-in allowlist. |
+
+Payloads are rendered server-side from fixed templates; there is no API that
+sends arbitrary text to a device. Each device chooses severities and quiet hours
+from its own settings, and lock-screen detail is opt-in per device.
+
+Keep the service-account JSON and the VAPID key outside the repository, mode
+`0600`, readable only by the Core container.
+
+## Alerts
+
+The alert engine evaluates host, service, DNS, device and resource state on the
+system-monitor cadence with debounce, hysteresis and sustained-window rules, so a
+single bad sample never pages anyone.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ROOMOS_SYSTEM_MONITOR_INTERVAL_SECONDS` | `60` | Snapshot cadence. |
+| `ROOMOS_ALERTS_NODE_CONFIRMATION_SECONDS` | `300` | How long a host must stay down before it is an incident. |
+| `ROOMOS_ALERTS_HISTORY_LIMIT` | `300` | Resolved alerts kept. |
+
+Per-device alert profiles (which resources matter on which device) and snoozes
+are managed from the clients with the `alerts:profile` and `alerts:snooze` scopes.
+
+## DNS health
+
+Functional DNS probes against two resolvers you run, reported as the `dns`
+service and in the system view.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ROOMOS_DNS_MONITOR_ENABLED` | `false` | Enable the probes. |
+| `ROOMOS_DNS_PRIMARY_ADDRESS` | `192.0.2.53` | First resolver (documentation address by default). |
+| `ROOMOS_DNS_SECONDARY_ADDRESS` | `192.0.2.54` | Second resolver. |
+| `ROOMOS_DNS_PROBE_NAME` | `example.com.` | Name queried. |
+| `ROOMOS_DNS_PROBE_INTERVAL_SECONDS` | `60` | Cadence. |
+| `ROOMOS_DNS_PROBE_TIMEOUT_SECONDS` | `2` | Per-query timeout; one lost reply is retried before a resolver counts as offline. |
+
+## Camera
+
+Read-only status of one camera (`room_camera`) from the entities in the
+registry, plus a bounded snapshot endpoint that serves the latest person image
+only while the detection is recent. Live streaming is not provided.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ROOMOS_CAMERA_REFRESH_INTERVAL_SECONDS` | `60` | Status refresh cadence. |
+| `ROOMOS_CAMERA_EVENT_RECENT_HOURS` | `24` | How long a person event counts as recent. |
+
+## Device telemetry
+
+The Devices view combines the monitored hosts with clients that report about
+themselves.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ROOMOS_DEVICES_CLIENT_TELEMETRY` | _empty_ | JSON map binding a paired client (its auth device id) to a catalog device: `{"<device-id>": {"device": "phone", "app": "android"}}`. Unbound clients report nothing. |
+| `ROOMOS_DEVICES_WORKSTATION_AGENT_ID` | _empty_ | HASS.Agent device name of a Windows workstation. |
+| `ROOMOS_DEVICES_WORKSTATION_ENTITIES` | _empty_ | JSON map of RoomOS sensor ids to the entity ids HASS.Agent created; `heartbeat` is required. |
+| `ROOMOS_DEVICES_WINDOWS_HEARTBEAT_SECONDS` | `120` | Heartbeat age after which the workstation counts as offline. |
+
+A client can only write its own telemetry (`telemetry:write:self`), only for the
+catalog device it is bound to, and only the sensors that device declares.
+Location is deliberately not a telemetry sensor.
+
+## Backups
+
+`scripts/roomos-backup-run.sh` creates an encrypted backup of the runtime state,
+restores it into a network-less throwaway container to prove it is usable, and
+writes a non-secret `status.json`. Point `ROOMOS_BACKUP_STATUS_HOST_DIR` at the
+directory holding that file and the Health view shows backup freshness. Core
+never sees the backups or the key.

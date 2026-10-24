@@ -4,11 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "roomos-core"
-version = "0.1.0"
+version = "0.2.0"
 description = "Secure RoomOS abstraction layer for Home Assistant"
 requires-python = ">=3.12"
 dependencies = [
+  "dnspython>=2.8,<3",
   "fastapi>=0.115,<1",
+  "google-auth[requests]>=2.38,<3",
   "httpx>=0.28,<1",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",

@@ -2,22 +2,51 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://roomos.local/schemas/event.schema.json",
   "title": "RoomOS Event",
+  "$comment": "Generated from core/app/models.py EventType by core/tools/export_event_schema.py. Do not edit by hand.",
   "type": "object",
-  "required": ["type", "timestamp", "data"],
+  "required": [
+    "type",
+    "timestamp",
+    "data"
+  ],
   "properties": {
     "type": {
       "type": "string",
       "enum": [
+        "roomos.connection",
         "light.state_changed",
+        "scene.active_changed",
         "system.metric_updated",
-        "system.node_online",
-        "system.node_offline",
-        "roomos.connection"
+        "system.snapshot_updated",
+        "system.service_updated",
+        "camera.updated",
+        "device.updated",
+        "alert.started",
+        "alert.resolved",
+        "alert.updated",
+        "activity.recorded",
+        "routine.changed",
+        "routine.deleted",
+        "routine.run_completed",
+        "routine.diagnostics",
+        "automation.changed",
+        "automation.deleted",
+        "automation.executed"
       ]
     },
-    "timestamp": { "type": "string", "format": "date-time" },
-    "device_id": { "type": ["string", "null"] },
-    "data": { "type": "object" }
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "device_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "data": {
+      "type": "object"
+    }
   },
   "additionalProperties": false
 }

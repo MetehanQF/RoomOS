@@ -52,6 +52,15 @@ To use a shorter window:
 docker compose exec core roomos pairing create --ttl-seconds 120
 ```
 
+### Pairing the Android client
+
+The native client pairs through its own profile, which issues a bearer session
+stored in Android Keystore instead of a browser cookie, and starts read-only:
+
+```bash
+docker compose exec core roomos pairing create --profile android-readonly
+```
+
 ## Managing devices
 
 ```bash
@@ -76,11 +85,30 @@ and `revoke` for a device you no longer have — a lost or sold tablet.
 
 Each device carries scopes, checked per route:
 
-| Scope | Grants |
-| --- | --- |
-| `lights:read` | Reading light state |
-| `lights:write` | Sending light commands |
-| `system:read` | Reading node and service status |
+| Scope | Grants | Granted at pairing |
+| --- | --- | --- |
+| `lights:read` | Reading light state | web, android |
+| `lights:write` | Light commands and scene activation | web |
+| `system:read` | Host, service, DNS, health and history views | web, android |
+| `camera:read` | Camera status and the bounded snapshot | android |
+| `activity:read` | Activity log, alert and notification lists | android |
+| `routines:read` | Routines and automations | android |
+| `routines:write` | Creating, editing and running routines and automations | — |
+| `devices:read` | Device telemetry (phones, tablets, workstation) | — |
+| `telemetry:write:self` | Reporting this client's own telemetry | — |
+| `alerts:ack` | Acknowledging, muting and reading notifications | — |
+| `alerts:snooze` | Snoozing one alert's repeat notifications | — |
+| `alerts:profile` | Choosing a device's alert profile | — |
+| `notifications:self` | Managing this device's own push settings and subscription | — |
+
+Scopes marked — are never granted by pairing; add them deliberately:
+
+```bash
+docker compose exec core roomos devices add-scope DEVICE_ID routines:write
+docker compose exec core roomos devices remove-scope DEVICE_ID routines:write
+```
+
+None of the alert scopes can resolve or hide a critical escalation.
 
 Scopes are the *device's* ceiling. A write must additionally pass the kill
 switch and the control policy, so `lights:write` is permission to ask, not

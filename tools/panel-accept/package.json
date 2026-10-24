@@ -1,0 +1,14 @@
+{
+  "name": "roomos-panel-accept",
+  "private": true,
+  "type": "module",
+  "description": "Isolated Chromium acceptance for RoomOS Panel Mode (synthetic HA, no real devices).",
+  "scripts": {
+    "accept:panel": "node run.mjs",
+    "probe:system": "node run.mjs --probe system",
+    "probe:heap": "node run.mjs --probe heap"
+  },
+  "devDependencies": {
+    "puppeteer-core": "25.13.0"
+  }
+}

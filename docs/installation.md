@@ -64,21 +64,23 @@ real deployment needs HTTPS — see [step 8](#8-optional-tls).
 For a first local run before TLS exists, you can develop against
 `ROOMOS_AUTH_ENABLED=false`. Never leave a real deployment that way.
 
-## 5. Describe your devices
+## 5. Describe your installation
 
 RoomOS refuses to touch anything it does not know about.
 
 ```bash
-cp core/app/devices.example.yaml config/devices.yaml
-$EDITOR config/devices.yaml
-echo "ROOMOS_DEVICE_REGISTRY=$PWD/config/devices.yaml" >> .env
+cp core/app/installation.example.yaml config/installation.yaml
+$EDITOR config/installation.yaml
+echo "ROOMOS_INSTALLATION_HOST_PATH=$PWD/config/installation.yaml" >> .env
 ```
 
-Replace the placeholder entities with your own. Find them in Home Assistant
-under **Developer tools → States**. Schema:
-[configuration.md](configuration.md#device-registry).
+Replace the placeholder entities with your own: lights, the two monitored hosts,
+the camera and the presence entities. Find them in Home Assistant under
+**Developer tools → States**. Schema:
+[configuration.md](configuration.md#installation-registry).
 
-`config/devices.yaml` is git-ignored — it describes your house.
+`config/installation.yaml` is git-ignored — it describes your house. A missing
+or malformed entry stops Core at boot with a message naming the key.
 
 ## 6. First start
 
@@ -89,11 +91,14 @@ ROOMOS_HA_CONNECT_ENABLED=true
 ```
 
 ```bash
+docker compose build          # images are tagged with ROOMOS_IMAGE_TAG from .env
 docker compose up -d
 docker compose ps
 ```
 
-Both services should report healthy.
+Both services should report healthy. Compose refuses to start without
+`ROOMOS_IMAGE_TAG`, so a deployment always names the exact build it runs; for
+immutable `sha-<commit>` tags use `scripts/build-release-images.sh`.
 
 ## 7. Pair your first device
 
@@ -204,7 +209,7 @@ minor releases may break configuration.
 ```bash
 docker compose down
 docker volume rm roomos_roomos_auth      # revokes every paired device
-docker image rm roomos-core:0.1.0 roomos-web:0.1.0
+docker image rm roomos-core:<tag> roomos-web:<tag>
 ```
 
 Then revoke the Home Assistant token and delete the dedicated HA user.
@@ -229,7 +234,8 @@ tripped. Create another; wait out the window if you burned the attempts.
 **Session lost after restart** — the auth volume was removed. Device records and
 the server secret live in `roomos_auth`.
 
-**Devices show unavailable** — registry entity IDs do not match Home Assistant.
+**Devices show unavailable** — registry entity IDs do not match Home Assistant,
+or Core is still on the bundled example (it logs a warning at startup).
 
 **Controls stay locked** — expected unless `ROOMOS_CONTROL_ENABLED=true` *and*
 the policy grants that device and action. `/api/v1/health` shows exactly what is

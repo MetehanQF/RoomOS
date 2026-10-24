@@ -1,6 +1,6 @@
 # RoomOS Wear OS client (planned)
 
-Not implemented in v0.1.0. This records the intended architecture.
+Not implemented yet. This records the intended architecture.
 
 ## Approach
 

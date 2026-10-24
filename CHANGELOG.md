@@ -10,12 +10,81 @@ While the major version is `0`, minor releases may contain breaking changes.
 
 ### Planned
 
-- Android client over the same Core API.
 - Wear OS client, paired through the phone.
-- Device classes beyond lighting.
-- Per-device scope editing from the CLI.
+- Web client following the installation time zone.
+- Device control beyond lighting.
 - General API rate limiting.
 - Demo mode with synthetic data, for screenshots and contributor onboarding.
+
+## [0.2.0] - 2026-10-24
+
+### Added
+
+**Clients**
+
+- Native Android client: read-only pairing profile (`android-readonly`), bearer
+  session encrypted with an Android Keystore key, device-bound FCM registration,
+  own-device telemetry.
+- Web wall-panel mode with a per-device customisable layout, and an ambient
+  screen.
+- Devices view with per-device telemetry, history and short forecasts.
+
+**Automation**
+
+- Scenes: fixed catalog applied per light through the control policy; the active
+  scene is reconciled from live light state.
+- Routines: time, sun-position and presence triggers; each schedule slot is
+  claimed once and survives a restart; bounded concurrency; managed example
+  routines installable from the CLI.
+- Automations: condition trees over device, metric and time state, cooldowns,
+  dry-run simulation and a bounded history explaining every decision.
+- `main_room_lights` logical group (power, brightness, colour temperature).
+
+**Monitoring and notifications**
+
+- Alert engine with debounce, hysteresis and sustained windows; per-device alert
+  profiles; acknowledge, mute, read and snooze.
+- Persisted notification incidents with dedupe and replay safety.
+- Push delivery over Firebase Cloud Messaging and Web Push (VAPID): fixed
+  server-side templates, per-device severities and quiet hours, opt-in
+  lock-screen detail, delivery receipts. `legacy` and `smart` modes.
+- Functional DNS health for two resolvers.
+- Camera status and a bounded, recent-only person snapshot.
+- Host-metric history and trends; Windows workstation telemetry via HASS.Agent.
+- Backup tooling: encrypted runtime-state backups proven by an isolated,
+  network-less restore, with a non-secret status shown in the Health view.
+
+**Operations**
+
+- Immutable release identity: images bound to the commit (`sha-<commit>`), OCI
+  labels, and `GET /api/v1/system/version`; Web warns on a Core/Web mismatch.
+- Core dependencies installed only from a hash-pinned lock.
+- `roomos devices add-scope` / `remove-scope`.
+
+### Changed
+
+- **Breaking:** the device registry is replaced by the installation registry.
+  `core/app/devices.example.yaml` and `ROOMOS_DEVICE_REGISTRY` are gone; copy
+  `core/app/installation.example.yaml` to `config/installation.yaml` and set
+  `ROOMOS_INSTALLATION_HOST_PATH`. It maps lights, the two monitored hosts (per
+  role), Frigate, the camera and presence. Logical light IDs are now fixed:
+  `room_main`, `room_2`, `room_3`, `room_4`, `desk_ambient`.
+- **Breaking:** Compose requires `ROOMOS_IMAGE_TAG` (set in `.env.example`).
+- Host metric IDs are `<node>_<role>` regardless of entity names.
+- Time-zone defaults are `UTC` (`ROOMOS_ROUTINES_TIMEZONE`,
+  `ROOMOS_PUSH_TIMEZONE`).
+- DNS monitoring is off by default.
+
+### Security
+
+- New scopes, none granted by default web pairing: `routines:write`,
+  `devices:read`, `telemetry:write:self`, `alerts:ack`, `alerts:snooze`,
+  `alerts:profile`, `notifications:self`; `camera:read`, `activity:read` and
+  `routines:read` are granted to the Android read-only profile.
+- FCM service account and VAPID key are mounted read-only into Core only; no
+  endpoint sends arbitrary notification text.
+- A client may write only its own telemetry, for the device it is bound to.
+- The service worker still caches nothing; it only displays Web Push.
 
 ## [0.1.0] - 2026-09-29
 
@@ -105,5 +174,6 @@ Initial public release.
 - Lighting is the only supported device class.
 - The Android and Wear OS clients are architecture notes, not implementations.
 
-[Unreleased]: https://github.com/MetehanQF/RoomOS/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/MetehanQF/RoomOS/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/MetehanQF/RoomOS/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MetehanQF/RoomOS/releases/tag/v0.1.0

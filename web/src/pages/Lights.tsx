@@ -1,104 +1,284 @@
-import { useCallback, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { api } from '../api'
-import { useApi, useRoomOSEvents } from '../hooks'
-import { CommandNotice, ErrorPanel, LoadingPanel, PageHeader, RealtimePill, SectionHeading, StatusPill } from '../components/Common'
+import { useAuthStatus } from '../auth-context'
+import { roomosLifecycle } from '../lifecycle'
+import { StatusPill } from '../components/Common'
 import { Icon } from '../components/Icons'
-import { applyLightEvent, brightnessToPercent, controlAccess, describeGroupResult, expandedLightSections, groupControlEnabled, isCurrentColor, kelvinPosition, lightNameMap, lightVisualState, percentToBrightness, temperatureLabel } from '../ui'
-import type { CommandFeedback, Health, Light, RoomOSEvent } from '../types'
+import { brightnessToPercent, percentToBrightness, temperatureLabel, type LightAction } from '../ui'
+import { COLOR_SWATCHES, LIGHT_SECTIONS, clampKelvin, colorMode, displayName, effectLabel, hexToRgb, kelvinValue, previewColor, rgbToHex, stateLine } from '../lights-state'
+import { LightsStore, type LightsApi, type LightsSnapshot } from '../lights-store'
+import type { ConnectionStatus, Light } from '../types'
+import { COMMIT_KEYS, useDraft } from '../light-draft'
 
-const colorPresets = [
-  { name: 'Warm white', rgb: [255, 214, 170] as [number, number, number] },
-  { name: 'Purple', rgb: [128, 0, 255] as [number, number, number] },
-  { name: 'Blue', rgb: [32, 102, 255] as [number, number, number] },
-  { name: 'Cyan', rgb: [0, 220, 255] as [number, number, number] },
-  { name: 'Red', rgb: [255, 55, 70] as [number, number, number] },
-  { name: 'Green', rgb: [40, 220, 115] as [number, number, number] },
-]
-
-function rgbToHex(rgb: [number, number, number] | null) {
-  return `#${(rgb ?? [128, 80, 255]).map((channel) => channel.toString(16).padStart(2, '0')).join('')}`
+const lightsApi: LightsApi = {
+  lights: api.lights,
+  health: api.health,
+  power: api.power,
+  brightness: api.brightness,
+  color: api.color,
+  temperature: api.temperature,
+  effect: api.effect,
+  allPower: api.allPower,
+  mainPower: api.mainPower,
+  mainBrightness: api.mainBrightness,
+  mainTemperature: api.mainTemperature,
+  activateScene: api.activateScene,
 }
 
-function BrightnessControl({ light, enabled, busy, onCommit }: { light: Light; enabled: boolean; busy: boolean; onCommit: (value: number) => void }) {
-  const live = brightnessToPercent(light.brightness)
-  const [draft, setDraft] = useState(live || 50)
-  const lastCommitted = useRef(live)
-  const commit = () => {
-    if (!enabled || busy || draft === lastCommitted.current) return
-    lastCommitted.current = draft
-    onCommit(percentToBrightness(draft))
-  }
-  return <div className={`control-block brightness-block ${light.on ? 'is-active' : 'is-idle'}`}><div className="control-label"><span>Brightness</span><strong>{light.on ? draft : 0}%</strong></div><input aria-label={`${light.name} brightness`} className="brightness-slider" type="range" min="1" max="100" value={draft} disabled={!enabled || busy} onChange={(event) => setDraft(Number(event.target.value))} onPointerUp={commit} onKeyUp={commit} style={{ '--brightness-fill': `${light.on ? draft : 0}%` } as CSSProperties} /><div className="range-ends"><span>Dim</span><span>Bright</span></div></div>
+export type LightsActions = {
+  can: (light: Light, action: LightAction) => boolean
+  canAllOn: boolean
+  canAllOff: boolean
+  reason: string | null
+  power: (light: Light, on: boolean) => void
+  brightness: (light: Light, value: number) => void
+  color: (light: Light, rgb: [number, number, number]) => void
+  temperature: (light: Light, kelvin: number) => void
+  effect: (light: Light, effect: string) => void
+  allOn: () => void
+  allOff: () => void
+  dismiss: () => void
+  refresh?: () => void
 }
 
-function TemperatureControl({ light, enabled, busy, onCommit }: { light: Light; enabled: boolean; busy: boolean; onCommit: (value: number) => void }) {
+const CONNECTION_LABEL: Record<ConnectionStatus, string> = { connected: 'Live', reconnecting: 'Reconnecting…', offline: 'Offline' }
+export function BrightnessSlider({ light, enabled, onCommit }: { light: Light; enabled: boolean; onCommit: (value: number) => void }) {
+  const live = Math.max(1, brightnessToPercent(light.brightness))
+  const draft = useDraft(live, enabled)
+  const commit = () => draft.take((percent) => onCommit(percentToBrightness(percent)))
+  return <div className="light-control">
+    <div className="light-control-label"><label htmlFor={`brightness-${light.id}`}>Brightness</label><strong>{draft.value}%</strong></div>
+    <input id={`brightness-${light.id}`} className="light-range brightness-range" type="range" min={1} max={100} step={1} value={draft.value} disabled={!enabled}
+      aria-valuetext={`${draft.value} percent`} style={{ '--fill': `${draft.value}%` } as CSSProperties}
+      onChange={(event) => draft.set(Number(event.target.value))} onPointerUp={commit} onPointerCancel={draft.cancel}
+      onKeyUp={(event: KeyboardEvent) => { if (COMMIT_KEYS.has(event.key)) commit() }} onBlur={draft.cancel} />
+  </div>
+}
+
+export function KelvinSlider({ light, enabled, onCommit }: { light: Light; enabled: boolean; onCommit: (value: number) => void }) {
   const { min_kelvin: min, max_kelvin: max } = light.capabilities
-  const initial = light.color_temperature_kelvin ?? Math.round((min + max) / 2)
-  const [draft, setDraft] = useState(initial)
-  const lastCommitted = useRef(initial)
-  const commit = () => {
-    if (!enabled || busy || draft === lastCommitted.current) return
-    lastCommitted.current = draft
-    onCommit(draft)
-  }
-  return <div className="control-block temperature-block"><div className="control-label"><span>White temperature</span><strong>{temperatureLabel(draft)} · {draft} K</strong></div><input aria-label={`${light.name} color temperature`} className="temperature-slider" type="range" min={min} max={max} step="50" value={draft} disabled={!enabled || busy} onChange={(event) => setDraft(Number(event.target.value))} onPointerUp={commit} onKeyUp={commit} style={{ '--kelvin-position': `${kelvinPosition(draft, min, max)}%` } as CSSProperties} /><div className="range-ends"><span>Warm · {min} K</span><span>Cool · {max} K</span></div></div>
+  const actual = kelvinValue(light)
+  const draft = useDraft(actual ?? min, enabled)
+  const shown = draft.dragging || actual !== null ? `${temperatureLabel(draft.value)} · ${draft.value} K` : colorMode(light) === 'colour' ? 'Not in white mode' : 'Value unavailable'
+  const commit = () => draft.take((value) => onCommit(clampKelvin(value, light)))
+  return <div className="light-control">
+    <div className="light-control-label"><label htmlFor={`kelvin-${light.id}`}>White temperature</label><strong>{shown}</strong></div>
+    <input id={`kelvin-${light.id}`} className={`light-range kelvin-range ${actual === null && !draft.dragging ? 'is-unset' : ''}`} type="range" min={min} max={max} step={50} value={draft.value} disabled={!enabled}
+      aria-valuetext={draft.dragging || actual !== null ? `${draft.value} Kelvin, ${temperatureLabel(draft.value).toLowerCase()}` : 'Not set'}
+      onChange={(event) => draft.set(Number(event.target.value))} onPointerUp={commit} onPointerCancel={draft.cancel}
+      onKeyUp={(event: KeyboardEvent) => { if (COMMIT_KEYS.has(event.key)) commit() }} onBlur={draft.cancel} />
+    <div className="light-range-ends"><span>Warm · {min} K</span><span>Cool · {max} K</span></div>
+  </div>
 }
 
-export function LightCard({ light, health, refresh, initialExpanded = false }: { light: Light; health: Health | null; refresh: () => Promise<void>; initialExpanded?: boolean }) {
-  const [feedback, setFeedback] = useState<CommandFeedback | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [expanded, setExpanded] = useState(initialExpanded)
-  const access = controlAccess(light, health)
-  const sections = expandedLightSections(light)
-  const displayName = light.name
-  const glow = light.rgb ? light.rgb.join(',') : light.color_mode === 'color_temp' ? '255,211,155' : '151,91,255'
-  const run = async (work: () => Promise<unknown>, success: string) => {
-    setBusy(true); setFeedback({ tone: 'pending', title: 'Sending command…' })
-    try { await work(); setFeedback({ tone: 'success', title: success }); await refresh() }
-    catch (cause) { setFeedback({ tone: 'error', title: 'Command failed', detail: cause instanceof Error ? cause.message : 'Please try again.' }) }
-    finally { setBusy(false) }
+export function ColourControls({ light, enabled, onCommit }: { light: Light; enabled: boolean; onCommit: (rgb: [number, number, number]) => void }) {
+  const current = colorMode(light) === 'colour' ? light.rgb : null
+  const [custom, setCustom] = useState(() => rgbToHex(current ?? [128, 80, 255]))
+  const customRgb = hexToRgb(custom)
+  const same = (a: readonly number[] | null, b: readonly number[]) => Boolean(a && a.every((channel, index) => Math.abs(channel - b[index]) <= 4))
+  return <div className="light-control">
+    <p className="light-control-title">Colour</p>
+    <div className="swatch-grid" role="group" aria-label="Colour presets">{COLOR_SWATCHES.map((swatch) => {
+      const selected = same(current, swatch.rgb)
+      return <button key={swatch.name} type="button" className={`swatch ${selected ? 'is-selected' : ''}`} disabled={!enabled} aria-pressed={selected} aria-label={swatch.name} title={swatch.name}
+        style={{ '--swatch': `rgb(${swatch.rgb.join(',')})` } as CSSProperties} onClick={() => onCommit(swatch.rgb)}><span aria-hidden="true" /></button>
+    })}</div>
+    <div className="custom-colour">
+      <label className="custom-colour-picker"><input type="color" value={custom} disabled={!enabled} aria-label={`${displayName(light)} custom colour`}
+        onChange={(event) => setCustom(event.target.value)} /><span>Custom</span></label>
+      <button type="button" className="apply-colour" disabled={!enabled || !customRgb || same(current, customRgb)} onClick={() => customRgb && onCommit(customRgb)}>Apply colour</button>
+    </div>
+  </div>
+}
+
+function EffectChips({ light, enabled, onCommit }: { light: Light; enabled: boolean; onCommit: (effect: string) => void }) {
+  return <div className="light-control">
+    <p className="light-control-title">Effect</p>
+    <div className={`effect-chips ${light.effects.length > 6 ? 'is-many' : ''}`} role="group" aria-label={`${displayName(light)} effects`}>
+      {light.effects.map((effect) => {
+        const active = light.effect === effect
+        return <button key={effect} type="button" className={`effect-chip ${active ? 'is-active' : ''}`} aria-pressed={active} disabled={!enabled || active} onClick={() => onCommit(effect)}>{effectLabel(effect)}</button>
+      })}
+    </div>
+  </div>
+}
+
+export function LightDetail({ light, snapshot, actions, onClose }: { light: Light; snapshot: LightsSnapshot; actions: LightsActions; onClose?: () => void }) {
+  const reported = colorMode(light)
+  const [mode, setMode] = useState<'white' | 'colour'>(() => reported === 'colour' || !light.capabilities.temperature ? 'colour' : 'white')
+  // Follow the light's reported mode when it changes; the switch itself never sends anything.
+  const [seen, setSeen] = useState(reported)
+  if (seen !== reported) {
+    setSeen(reported)
+    if (reported !== 'unknown') setMode(reported)
   }
-  const currentMode = !light.available ? 'Unavailable' : !light.on ? 'Off' : light.color_mode === 'color_temp' ? `${light.color_temperature_kelvin ?? ''} K white` : light.rgb ? `RGB ${light.rgb.join(' · ')}` : 'White light'
-  const advancedCount = Object.values(sections).filter(Boolean).length
-
-  return <article className={`light-panel surface state-${lightVisualState(light)} ${expanded ? 'is-expanded' : ''}`} style={{ '--light-glow': glow } as CSSProperties}>
-    <div className="light-panel-head"><div className="light-identity"><span className="light-icon"><Icon name="bulb" /></span><div><p>Smart light</p><h2>{displayName}</h2></div></div><StatusPill status={!light.available ? 'unknown' : light.on ? 'online' : 'offline'} label={!light.available ? 'Unavailable' : light.on ? 'On' : 'Off'} /></div>
-    <div className="light-daily-row"><div className="light-visual"><div className="light-aura" /><div><strong>{currentMode}</strong><span>{light.on ? `${brightnessToPercent(light.brightness)}% brightness` : light.available ? 'Ready' : 'No response'}</span></div></div><button className={`device-power ${light.on ? 'turn-off' : 'turn-on'}`} disabled={!access.power || busy} onClick={() => void run(() => api.power(light.id, !light.on), light.on ? `${displayName} turned off` : `${displayName} turned on`)}><Icon name="power" /><span>{busy ? 'Working…' : light.on ? 'Turn off' : 'Turn on'}</span></button></div>
-
-    {light.capabilities.brightness && <BrightnessControl key={`brightness-${light.brightness}`} light={light} enabled={access.brightness} busy={busy} onCommit={(value) => void run(() => api.brightness(light.id, value), `${displayName} brightness updated`)} />}
-    <div className="light-color-summary"><span className="current-color" style={{ '--current-color': `rgb(${glow})` } as CSSProperties} /><span>{light.on ? currentMode : 'Color idle'}</span><div className="capability-row"><span>{light.capabilities.color ? 'Color' : 'White'}</span>{light.capabilities.temperature && <span>{light.capabilities.min_kelvin}–{light.capabilities.max_kelvin} K</span>}</div></div>
-    {advancedCount > 0 && <button className="expand-controls" aria-expanded={expanded} aria-controls={`advanced-${light.id}`} onClick={() => setExpanded((value) => !value)}><span>{expanded ? 'Hide controls' : 'More controls'}</span><small>{advancedCount} options</small><span className="expand-chevron">⌄</span></button>}
-    {expanded && <div className="advanced-controls" id={`advanced-${light.id}`}>
-      {sections.temperature && <TemperatureControl key={`temperature-${light.color_temperature_kelvin}-${light.capabilities.min_kelvin}-${light.capabilities.max_kelvin}`} light={light} enabled={access.temperature} busy={busy} onCommit={(value) => void run(() => api.temperature(light.id, value), `${displayName} white temperature updated`)} />}
-      {sections.color && <div className="control-block color-block"><div className="control-label"><span>Color</span><label className={`color-picker ${!access.color || busy ? 'disabled' : ''}`}><input aria-label={`${displayName} custom color`} type="color" value={rgbToHex(light.rgb)} disabled={!access.color || busy} onChange={(event) => { const hex = event.target.value; const rgb: [number, number, number] = [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]; void run(() => api.color(light.id, rgb), `${displayName} color updated`) }} /><span>Custom</span></label></div><div className="color-presets">{colorPresets.map((preset) => <button key={preset.name} className={`color-preset ${isCurrentColor(light.rgb, preset.rgb) ? 'is-selected' : ''}`} aria-label={`${displayName}: ${preset.name}`} aria-pressed={isCurrentColor(light.rgb, preset.rgb)} title={preset.name} disabled={!access.color || busy} style={{ '--preset-color': `rgb(${preset.rgb.join(',')})` } as CSSProperties} onClick={() => void run(() => api.color(light.id, preset.rgb), `${displayName} set to ${preset.name.toLowerCase()}`)}><span /></button>)}</div></div>}
-      {sections.effects && <div className="control-block effect-block"><div className="control-label"><span>Effect</span></div><select aria-label={`${displayName} effect`} value={light.effect ?? ''} disabled={!access.effect || busy} onChange={(event) => { if (event.target.value) void run(() => api.effect(light.id, event.target.value), `${displayName} effect updated`) }}><option value="" disabled>Select an effect</option>{light.effects.map((effect) => <option value={effect} key={effect}>{effect}</option>)}</select></div>}
-    </div>}
-    <CommandNotice feedback={feedback} onDismiss={() => setFeedback(null)} />
+  const feedback = snapshot.feedback?.scope === light.id ? snapshot.feedback.value : null
+  const pending = snapshot.pending?.lightId === light.id
+  const on = light.available && light.on === true
+  const caps = light.capabilities
+  return <article className="light-detail surface" aria-labelledby={`light-detail-${light.id}`}>
+    <header className="light-detail-head">
+      <span className="light-preview" style={{ '--preview': previewColor(light) ?? 'transparent' } as CSSProperties} aria-hidden="true" />
+      <div><p className="eyebrow">{light.id === 'desk_ambient' ? 'LED strip' : 'Room light'}</p><h2 id={`light-detail-${light.id}`}>{displayName(light)}</h2><p className="light-detail-state">{stateLine(light)}</p></div>
+      {light.available && <button type="button" className={`light-power ${on ? 'is-on' : ''}`} disabled={!actions.can(light, 'power')} aria-pressed={on} onClick={() => actions.power(light, !on)}>
+        <Icon name="power" /><span>{pending && snapshot.pending?.action === 'power' ? 'Working…' : on ? 'Turn off' : 'Turn on'}</span></button>}
+      {onClose && <button type="button" className="sheet-close" onClick={onClose} aria-label="Close">Close</button>}
+    </header>
+    {!light.available && <p className="light-note">Unavailable · can't control right now.</p>}
+    {light.available && !on && <p className="light-note">Turn on to adjust brightness, colour and effects.</p>}
+    {on && <>
+      {caps.brightness && light.brightness === null && <p className="light-note">Brightness unavailable</p>}
+      {caps.brightness && light.brightness !== null && <BrightnessSlider key={`b-${light.id}`} light={light} enabled={actions.can(light, 'brightness')} onCommit={(value) => actions.brightness(light, value)} />}
+      {(caps.temperature || caps.color) && <div className="mode-switch" role="group" aria-label="Light mode">
+        {caps.temperature && <button type="button" aria-pressed={mode === 'white'} className={mode === 'white' ? 'is-active' : ''} onClick={() => setMode('white')}>White</button>}
+        {caps.color && <button type="button" aria-pressed={mode === 'colour'} className={mode === 'colour' ? 'is-active' : ''} onClick={() => setMode('colour')}>Colour</button>}
+      </div>}
+      {mode === 'white' && caps.temperature && <KelvinSlider key={`k-${light.id}`} light={light} enabled={actions.can(light, 'temperature')} onCommit={(value) => actions.temperature(light, value)} />}
+      {mode === 'colour' && caps.color && <ColourControls key={`c-${light.id}`} light={light} enabled={actions.can(light, 'color')} onCommit={(rgb) => actions.color(light, rgb)} />}
+      {caps.effects && light.effects.length > 0 && <EffectChips light={light} enabled={actions.can(light, 'effect')} onCommit={(effect) => actions.effect(light, effect)} />}
+    </>}
+    {on && !pending && ['power', 'brightness', 'color', 'temperature', 'effect'].some((action) => !actions.can(light, action as LightAction)) && <p className="light-permission-note">{actions.reason ?? 'Only supported controls permitted for this device are enabled.'}</p>}
+    {feedback && <div className={`light-feedback is-${feedback.tone}`}><div><strong>{feedback.title}</strong>{feedback.detail && <span>{feedback.detail}</span>}</div>
+      {feedback.tone !== 'pending' && <button type="button" onClick={actions.dismiss} aria-label="Dismiss result">×</button>}</div>}
   </article>
 }
 
-export function LightsPage() {
-  const loader = useCallback(() => api.lights(), [])
-  const healthLoader = useCallback(() => api.health(), [])
-  const { data: lights, error, loading, refresh, setData } = useApi(loader)
-  const { data: health, refresh: refreshHealth } = useApi(healthLoader)
-  const [groupFeedback, setGroupFeedback] = useState<CommandFeedback | null>(null)
-  const onEvent = useCallback((event: RoomOSEvent) => setData((current) => applyLightEvent(current, event)), [setData])
-  const realtime = useRoomOSEvents(onEvent, refresh)
-  const canControlAll = groupControlEnabled(health)
-  const onCount = useMemo(() => lights?.filter((light) => light.on).length ?? 0, [lights])
+function LightRow({ light, selected, actions, snapshot, onSelect }: { light: Light; selected: boolean; actions: LightsActions; snapshot: LightsSnapshot; onSelect: (light: Light, origin: HTMLButtonElement) => void }) {
+  const on = light.available && light.on === true
+  const pending = snapshot.pending?.lightId === light.id && snapshot.pending.action === 'power'
+  return <li className={`light-row ${selected ? 'is-selected' : ''} ${light.available ? (on ? 'is-on' : 'is-off') : 'is-unavailable'}`} data-light={light.id}>
+    <button type="button" className="light-row-select" aria-pressed={selected} aria-label={`${displayName(light)}, ${stateLine(light)}`} onClick={(event: MouseEvent<HTMLButtonElement>) => onSelect(light, event.currentTarget)}>
+      <span className="light-preview" style={{ '--preview': previewColor(light) ?? 'transparent' } as CSSProperties} aria-hidden="true" />
+      <span className="light-row-text"><strong>{displayName(light)}</strong><span>{stateLine(light)}</span></span>
+    </button>
+    {light.available && <button type="button" className={`light-row-power ${on ? 'is-on' : ''}`} disabled={!actions.can(light, 'power')} aria-pressed={on}
+      aria-label={`${on ? 'Turn off' : 'Turn on'} ${displayName(light)}`} onClick={() => actions.power(light, !on)}>
+      <Icon name="power" />{pending && <span>…</span>}</button>}
+  </li>
+}
 
-  const runGroup = async (on: boolean) => {
-    setGroupFeedback({ tone: 'pending', title: on ? 'Turning all lights on…' : 'Turning all lights off…' })
-    try { const result = await api.allPower(on); setGroupFeedback(describeGroupResult(result, lightNameMap(lights))); await Promise.all([refresh(), refreshHealth()]) }
-    catch (cause) { setGroupFeedback({ tone: 'error', title: 'Group command failed', detail: cause instanceof Error ? cause.message : 'Please try again.' }) }
+export function LightsView({ snapshot, actions, selectedId, onSelect, sheet }: {
+  snapshot: LightsSnapshot; actions: LightsActions; selectedId: string | null
+  onSelect: (light: Light, origin: HTMLButtonElement) => void; sheet?: ReactNode
+}) {
+  const lights = snapshot.lights
+  const byId = new Map((lights ?? []).map((light) => [light.id, light]))
+  const selected = selectedId ? byId.get(selectedId) ?? null : null
+  const onCount = lights?.filter((light) => light.available && light.on === true).length ?? 0
+  const unavailable = lights?.filter((light) => !light.available).length ?? 0
+  const group = snapshot.feedback?.scope === 'group' ? snapshot.feedback.value : null
+  const groupPending = snapshot.pending?.lightId === null ? snapshot.pending.action : null
+  const live = snapshot.connection === 'connected' && snapshot.trusted && snapshot.control?.home_assistant === 'connected'
+  return <section className="page lights-page lights-v2">
+    <header className="lights-top">
+      <div><p className="eyebrow">Room lighting</p><h1>Lights</h1>
+        <p className="lights-summary">{lights ? `${onCount} of ${lights.length} on${unavailable ? ` · ${unavailable} unavailable` : ''}` : snapshot.lightsStatus === 'error' ? 'Light state unavailable' : 'Loading lights…'}{lights && !live ? ' · last known' : ''}</p></div>
+      <div className="lights-top-actions">
+        <StatusPill status={snapshot.connection === 'connected' ? 'online' : snapshot.connection === 'offline' ? 'offline' : 'stale'} label={CONNECTION_LABEL[snapshot.connection]} />
+        <div className="lights-group" role="group" aria-label="All room lights">
+          <button type="button" className="group-action group-all-on" disabled={!actions.canAllOn} onClick={actions.allOn}><Icon name="power" />{groupPending === 'all_on' ? 'Turning on…' : 'All on'}</button>
+          <button type="button" className="group-action group-all-off" disabled={!actions.canAllOff} onClick={actions.allOff}><Icon name="moon" />{groupPending === 'all_off' ? 'Turning off…' : 'All off'}</button>
+        </div>
+      </div>
+    </header>
+    {actions.reason && <p className="lights-reason">{actions.reason}</p>}
+    {(snapshot.lightsStatus === 'error' || snapshot.controlStatus === 'error' || snapshot.feedback?.value.tone === 'partial' || snapshot.feedback?.value.tone === 'error') && actions.refresh && <button type="button" className="lights-refresh" disabled={snapshot.refreshing || snapshot.pending !== null} onClick={actions.refresh}>Refresh status</button>}
+    {group && <div className={`light-feedback is-${group.tone} lights-group-feedback`}><div><strong>{group.title}</strong>{group.detail && <span>{group.detail}</span>}</div>
+      {group.tone !== 'pending' && <button type="button" onClick={actions.dismiss} aria-label="Dismiss result">×</button>}</div>}
+    <div className="lights-layout">
+      <nav className="lights-list" aria-label="Lights">
+        {!lights && <p className="lights-loading">{snapshot.lightsStatus === 'error' ? 'Lights could not be loaded.' : 'Loading lights…'}</p>}
+        {lights && LIGHT_SECTIONS.map((section) => {
+          const members = section.ids.map((id) => byId.get(id)).filter((light): light is Light => Boolean(light))
+          if (!members.length) return null
+          return <div key={section.key} className="lights-section"><h2 className="lights-section-title">{section.title}</h2>
+            <ul>{members.map((light) => <LightRow key={light.id} light={light} selected={light.id === selectedId} actions={actions} snapshot={snapshot} onSelect={onSelect} />)}</ul></div>
+        })}
+      </nav>
+      <div className="lights-detail-pane">{selected ? <LightDetail key={selected.id} light={selected} snapshot={snapshot} actions={actions} /> : lights && <p className="lights-loading">Select a light.</p>}</div>
+    </div>
+    {sheet}
+    <div className="sr-only" aria-live="polite" aria-atomic="true">{snapshot.announcement && <span key={snapshot.announcement.id}>{snapshot.announcement.text}</span>}</div>
+  </section>
+}
+
+function usePhone() {
+  const query = '(max-width: 640px)'
+  const [phone, setPhone] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches)
+  useEffect(() => {
+    const media = window.matchMedia(query)
+    const listener = () => setPhone(media.matches)
+    media.addEventListener('change', listener)
+    return () => media.removeEventListener('change', listener)
+  }, [])
+  return phone
+}
+
+export function LightsPage() {
+  const auth = useAuthStatus()
+  const scopeKey = (auth?.device?.scopes ?? []).join(' ')
+  const store = useMemo(() => new LightsStore(lightsApi, scopeKey ? scopeKey.split(' ') : [], auth?.authenticated === true, roomosLifecycle?.snapshot ?? 'reconnecting'), [scopeKey, auth])
+  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot)
+  const phone = usePhone()
+  const [selectedId, setSelectedId] = useState<string | null>('room_main')
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const originRef = useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    if (!roomosLifecycle) { void store.load(); return }
+    if (roomosLifecycle.snapshot === 'connected') void store.load()
+    const unsubscribeStatus = roomosLifecycle.subscribeStatus((status) => {
+      store.setConnection(status)
+      if (status === 'offline' && !store.getSnapshot().lights) void store.load()
+    })
+    const unsubscribeEvents = roomosLifecycle.subscribeEvents((event) => store.handleEvent(event), () => store.load(), { refreshOnEvent: false })
+    return () => { unsubscribeStatus(); unsubscribeEvents() }
+  }, [store])
+
+  const closeSheet = () => dialogRef.current?.close()
+  const trapSheetFocus = (event: KeyboardEvent<HTMLDialogElement>) => {
+    if (event.key !== 'Tab') return
+    const targets = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]')].filter((element) => element.getClientRects().length)
+    const first = targets[0], last = targets.at(-1)
+    if (!first || !last) return
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+  }
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const onClose = () => { document.body.classList.remove('sheet-open'); originRef.current?.focus() }
+    dialog.addEventListener('close', onClose)
+    return () => { dialog.removeEventListener('close', onClose); if (dialog.open) dialog.close(); document.body.classList.remove('sheet-open') }
+  }, [phone])
+
+  const onSelect = (light: Light, origin: HTMLButtonElement) => {
+    setSelectedId(light.id)
+    if (phone && dialogRef.current && !dialogRef.current.open) {
+      originRef.current = origin
+      document.body.classList.add('sheet-open')
+      dialogRef.current.showModal()
+    }
   }
 
-  return <section className="page lights-page">
-    <PageHeader eyebrow="Room lighting" title="Lights" subtitle="Shape the room, one light at a time."><RealtimePill status={realtime} /></PageHeader>
-    {error && <ErrorPanel message={error} />}{loading && <LoadingPanel label="Reading light states…" />}
-    <article className="group-control surface"><div className="group-copy"><span className="group-icon"><Icon name="lights" /></span><div><p className="eyebrow">All lights</p><h2>{onCount} of {lights?.length ?? 0} on</h2></div></div><div className="group-actions"><button className="group-on" disabled={!canControlAll || groupFeedback?.tone === 'pending'} onClick={() => void runGroup(true)}><Icon name="power" />All on</button><button className="group-off" disabled={!canControlAll || groupFeedback?.tone === 'pending'} onClick={() => void runGroup(false)}><Icon name="power" />All off</button></div><CommandNotice feedback={groupFeedback} onDismiss={() => setGroupFeedback(null)} />{!canControlAll && <div className="locked-strip"><Icon name="system" />Controls locked</div>}</article>
-    <SectionHeading icon="bulb" title="Your lights" />
-    <div className="lights-grid">{lights?.map((light) => <LightCard key={light.id} light={light} health={health} refresh={refresh} />)}</div>
-  </section>
+  const actions: LightsActions = {
+    can: (light, action) => store.can(light, action),
+    canAllOn: store.canAllOn(),
+    canAllOff: store.canAllOff(),
+    reason: store.page().reason,
+    power: (light, on) => { void store.power(light, on) },
+    brightness: (light, value) => { void store.brightness(light, value) },
+    color: (light, rgb) => { void store.color(light, rgb) },
+    temperature: (light, kelvin) => { void store.temperature(light, kelvin) },
+    effect: (light, effect) => { void store.effect(light, effect) },
+    allOn: () => { void store.allOn() },
+    allOff: () => { void store.allOff() },
+    dismiss: () => store.dismiss(),
+    refresh: () => { void store.load() },
+  }
+  const selected = snapshot.lights?.find((light) => light.id === selectedId) ?? null
+  const sheet = phone ? <dialog ref={dialogRef} className="light-sheet" onKeyDown={trapSheetFocus} aria-label={selected ? displayName(selected) : 'Light'}>
+    {selected && <LightDetail key={selected.id} light={selected} snapshot={snapshot} actions={actions} onClose={closeSheet} />}
+  </dialog> : null
+  return <LightsView snapshot={snapshot} actions={actions} selectedId={phone ? null : selectedId} onSelect={onSelect} sheet={sheet} />
 }

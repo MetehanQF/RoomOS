@@ -13,6 +13,16 @@ location /api/v1/events {
     proxy_read_timeout 75s;
 }
 
+location = /api/v1/native/events {
+    proxy_pass http://core:5501;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 75s;
+}
+
 location /api/ {
     proxy_pass http://core:5501;
     proxy_set_header Host $host;
@@ -21,6 +31,12 @@ location /api/ {
 
 location = /manifest.webmanifest {
     default_type application/manifest+json;
+    try_files $uri =404;
+}
+
+location = /sw.js {
+    default_type application/javascript;
+    expires -1;
     try_files $uri =404;
 }
 

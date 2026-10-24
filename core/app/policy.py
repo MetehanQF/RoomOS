@@ -12,8 +12,10 @@ PRODUCTION_POLICY = MappingProxyType(
     {
         **{light_id: PHYSICAL_ACTIONS for light_id in LIGHT_BY_ID},
         "all_room_lights": frozenset({"power"}),
+        "main_room_lights": frozenset({"power", "brightness", "temperature"}),
     }
 )
+GROUP_IDS = ("all_room_lights", "main_room_lights")
 
 
 def writable_permissions(settings: Settings) -> dict[str, frozenset[str]]:
@@ -22,7 +24,7 @@ def writable_permissions(settings: Settings) -> dict[str, frozenset[str]]:
     if settings.control_policy == "production":
         return dict(PRODUCTION_POLICY)
     if settings.control_policy == "scoped":
-        known_ids = frozenset((*LIGHT_BY_ID, "all_room_lights"))
+        known_ids = frozenset((*LIGHT_BY_ID, *GROUP_IDS))
         return {
             device_id: frozenset(
                 action
@@ -36,7 +38,7 @@ def writable_permissions(settings: Settings) -> dict[str, frozenset[str]]:
 
 
 def require_policy_permission(settings: Settings, device_id: str, action: LightAction) -> None:
-    known_ids = frozenset((*LIGHT_BY_ID, "all_room_lights"))
+    known_ids = frozenset((*LIGHT_BY_ID, *GROUP_IDS))
     if device_id not in known_ids:
         security_audit("write_rejected_by_policy", result="unknown_device")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown RoomOS device")

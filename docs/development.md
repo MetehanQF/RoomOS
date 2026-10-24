@@ -1,34 +1,40 @@
 # Development
 
 No Home Assistant instance, token, or paired device is required. The suite runs
-entirely against fakes, and the bundled device registry maps entities that do
-not exist.
+entirely against fakes, and the bundled installation registry maps entities that
+do not exist.
 
 ## Layout
 
 ```text
 core/          FastAPI service
-  app/         catalog (registry) · policy · auth · service · events · main · cli
-  tests/       api · auth · events · production policy
+  app/         catalog (registry loader) · policy · auth · service · events · main · cli
+               scenes · routines · automations · alerts · notifications · push · devices
+  tests/       one module per area, all against FakeHA
+  config/      empty example runtime documents
 web/           React + TypeScript + Vite PWA
-  src/         pages · components · api · auth · hooks · ui
+  src/         pages · components · stores · api · auth · hooks · ui
+android/       native Kotlin client (read-only pairing, FCM, telemetry)
+wear/          planned Wear OS client (architecture notes only)
 shared/api/    client contract: JSON Schemas + notes
-docker/        nginx configuration
-config/        your device registry (git-ignored)
+scripts/       release images, dependency lock, encrypted state backups (+ tests)
+tools/         panel acceptance harness against a fake Home Assistant
+docker/        nginx configuration (HTTP default, TLS overlay)
+config/        your installation registry (git-ignored)
 docs/          this documentation
 ```
 
 ## Setup
 
 ```bash
-# Core
-cd core
-python3 -m venv .venv
-.venv/bin/pip install -e '.[test]'
-.venv/bin/pytest
+# Core (scripts/test-core.sh refuses to run with a Python env from elsewhere)
+python3 -m venv core/.venv
+core/.venv/bin/pip install -e 'core[test]'
+scripts/test-core.sh -q
+core/.venv/bin/python -m pytest scripts/tests -q
 
 # Web
-cd ../web
+cd web
 npm ci
 npm test
 npm run lint
@@ -79,6 +85,10 @@ IDs. If you add a fixture device, do it in the registry, not inline.
 Web tests use Vitest. `api.test.ts` covers the runtime shape check on the
 `/system` response, so a Core/Web contract drift fails before React renders.
 
+Android unit tests run with Gradle (`cd android && ./gradlew testInternalUnitTest`).
+The build needs the Android SDK; `google-services.json` is git-ignored and only
+required for a build that actually receives FCM pushes.
+
 ## The two invariants
 
 Both are covered by tests. Keep them that way:
@@ -109,7 +119,7 @@ build on these patterns; it is a safety net, not a substitute for looking. See
 [../CONTRIBUTING.md](../CONTRIBUTING.md).
 
 **Anything site-specific belongs in the registry or an environment variable.**
-If you add a field, add it to `core/app/devices.example.yaml` with a placeholder
+If you add a field, add it to `core/app/installation.example.yaml` with a placeholder
 and document it in [configuration.md](configuration.md).
 
 **Never commit auth state.** `data/`, `*.db`, `server-secret` are git-ignored.
@@ -136,8 +146,8 @@ Scopes in use: `core`, `web`, `auth`, `docker`, `docs`, `ci`.
 | Job | What |
 | --- | --- |
 | Privacy scan | Denylist over tracked files |
-| Core tests | `pytest` |
-| Web | `vitest`, ESLint, production build |
-| Compose | Config validation, nginx syntax check, image build |
+| Core tests | `pytest`, including the installation-registry loader and the backup scripts |
+| Web | `vitest`, ESLint, typecheck, production build |
+| Compose | Config validation (with and without the TLS overlay), nginx syntax check, image build |
 
 No secrets, no Home Assistant instance, no network services.

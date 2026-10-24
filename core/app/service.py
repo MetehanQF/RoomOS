@@ -1,19 +1,26 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
 
 from .catalog import (
+    FRIGATE_ENTITIES,
+    FRIGATE_STATUS_ENTITY,
     LIGHTS,
     LIGHT_BY_ID,
-    NODE_BY_ID,
-    NODES,
+    MAIN_LIGHTS,
+    NODE_METRIC_BY_ENTITY,
+    NODE_NAMES,
     PHYSICAL_LIGHT_ENTITY_IDS,
-    SERVICES,
+    PRIMARY_ENTITIES,
+    SECONDARY_ENTITIES,
 )
+from .dns_health import unknown_dns_cluster
 from .ha_client import HomeAssistantClient, HomeAssistantUnavailable
 from .models import (
     Capabilities,
+    DnsClusterStatus,
     GroupCommandResult,
     GroupTargetFailure,
     LightState,
@@ -112,6 +119,34 @@ async def set_all_power(client: HomeAssistantClient, on: bool) -> GroupCommandRe
     return GroupCommandResult(accepted=not failed, succeeded=succeeded, failed=failed)
 
 
+async def command_main_lights(client: HomeAssistantClient, service: str, data: dict[str, Any]) -> GroupCommandResult:
+    """Send one light service to every available main-room light at the same time.
+
+    Members are read once; unavailable members are reported and never called. Each call
+    succeeds or fails on its own and is never retried. If Home Assistant cannot be read at
+    all the caller receives HomeAssistantUnavailable (503), as for a single light.
+    """
+    states = await client.get_states([light.entity_id for light in MAIN_LIGHTS])
+    targets = [light for light in MAIN_LIGHTS if (states.get(light.entity_id) or {}).get("state") not in (None, "unavailable")]
+    outcomes = await asyncio.gather(
+        *(client.call_service("light", service, {"entity_id": light.entity_id, **data}) for light in targets),
+        return_exceptions=True,
+    )
+    by_id = {light.id: outcome for light, outcome in zip(targets, outcomes)}
+    succeeded: list[str] = []
+    failed: list[GroupTargetFailure] = []
+    for light in MAIN_LIGHTS:
+        if light.id not in by_id:
+            failed.append(GroupTargetFailure(device_id=light.id, reason="unavailable"))
+        elif isinstance(by_id[light.id], HomeAssistantUnavailable):
+            failed.append(GroupTargetFailure(device_id=light.id, reason="service_failed"))
+        elif isinstance(by_id[light.id], BaseException):
+            raise by_id[light.id]
+        else:
+            succeeded.append(light.id)
+    return GroupCommandResult(accepted=not failed, device_id="main_room_lights", succeeded=succeeded, failed=failed)
+
+
 def validate_kelvin(definition, kelvin: int) -> None:
     if not definition.min_kelvin <= kelvin <= definition.max_kelvin:
         raise HTTPException(
@@ -128,12 +163,52 @@ def validate_live_effect(current: LightState, effect: str) -> None:
         )
 
 
-def _metric(entity_id: str, state: dict[str, Any] | None) -> SystemMetric:
+FAST_METRIC_SUFFIXES = frozenset({"cpu", "ram", "temperature"})
+CADENCE_METRIC_SUFFIXES = frozenset({"uptime"})
+FAST_METRIC_MAX_AGE = timedelta(minutes=3)
+CADENCE_METRIC_MAX_AGE = timedelta(minutes=75)
+
+
+def metric_id_for(entity_id: str) -> str:
+    """API metric id: ``<node>_<role>`` for a mapped host entity, else the entity object id."""
+    mapped = NODE_METRIC_BY_ENTITY.get(entity_id)
+    return mapped[1] if mapped else entity_id.split(".", 1)[1]
+
+
+def _metric(
+    entity_id: str,
+    state: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> SystemMetric:
+    metric_id = metric_id_for(entity_id)
     attrs = state.get("attributes", {}) if state else {}
     updated = _parse_datetime(state.get("last_updated")) if state else None
-    available = bool(state and state.get("state") not in {"unknown", "unavailable"})
-    stale = not updated or datetime.now(UTC) - updated > timedelta(minutes=5)
     raw = state.get("state") if state else None
+    if state is None or raw == "unknown":
+        freshness = "unknown"
+    elif raw == "unavailable":
+        freshness = "unavailable"
+    else:
+        suffix = metric_id.rsplit("_", 1)[-1]
+        max_age = (
+            FAST_METRIC_MAX_AGE
+            if suffix in FAST_METRIC_SUFFIXES
+            else CADENCE_METRIC_MAX_AGE
+            if suffix in CADENCE_METRIC_SUFFIXES
+            else None
+        )
+        # HA last_updated is a state-change timestamp, not a poll timestamp. Stable
+        # REST/integration values therefore use HA availability as their freshness
+        # signal; only metrics expected to change on a cadence are aged here.
+        freshness = (
+            "stale"
+            if max_age is not None
+            and (updated is None or (now or datetime.now(UTC)) - updated > max_age)
+            else "fresh"
+        )
+    available = freshness not in {"unknown", "unavailable"}
+    stale = freshness == "stale"
     if entity_id.startswith("binary_sensor.") and available:
         value: Any = raw == "on"
     else:
@@ -142,11 +217,12 @@ def _metric(entity_id: str, state: dict[str, Any] | None) -> SystemMetric:
         except (TypeError, ValueError):
             value = raw
     return SystemMetric(
-        id=entity_id.split(".", 1)[1],
+        id=metric_id,
         value=value if available else None,
         unit=attrs.get("unit_of_measurement"),
         available=available,
         stale=stale,
+        freshness=freshness,
         last_updated=updated,
     )
 
@@ -155,48 +231,135 @@ async def _node(
     client: HomeAssistantClient, node_id: str, name: str, entity_ids: tuple[str, ...]
 ) -> SystemNode:
     states = await client.get_states(entity_ids)
-    metrics = {entity_id.split(".", 1)[1]: _metric(entity_id, states[entity_id]) for entity_id in entity_ids}
+    metrics = {metric_id_for(entity_id): _metric(entity_id, states[entity_id]) for entity_id in entity_ids}
     online_metric = metrics.get(f"{node_id}_online")
     online = online_metric.value if online_metric and online_metric.available else None
+    heartbeat_fresh = any(
+        metrics.get(f"{node_id}_{suffix}")
+        and metrics[f"{node_id}_{suffix}"].freshness == "fresh"
+        for suffix in FAST_METRIC_SUFFIXES
+    )
+    if online is True and heartbeat_fresh:
+        # Every node metric is rendered from one 60-second REST snapshot. A fresh
+        # changing sibling proves the shared source is still being polled even
+        # when an individual value (for example disk usage) has not changed.
+        for metric in metrics.values():
+            if metric.available:
+                metric.freshness = "fresh"
+                metric.stale = False
+    elif online is False:
+        for metric_id, metric in metrics.items():
+            if metric_id != f"{node_id}_online" and metric.available:
+                metric.freshness = "stale"
+                metric.stale = True
     return SystemNode(id=node_id, name=name, online=online, metrics=metrics)
 
 
-def node_or_404(node_id: str):
-    definition = NODE_BY_ID.get(node_id)
-    if definition is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown node ID")
-    return definition
-
-
 async def system_node(client: HomeAssistantClient, node_id: str) -> SystemNode:
-    definition = node_or_404(node_id)
-    return await _node(client, definition.id, definition.name, definition.entity_ids)
+    if node_id == "primary":
+        return await _node(client, "primary", NODE_NAMES["primary"], PRIMARY_ENTITIES)
+    return await _node(client, "secondary", NODE_NAMES["secondary"], SECONDARY_ENTITIES)
 
 
-def _service_status(state: dict[str, Any] | None) -> str:
-    raw = state.get("state") if state else None
-    if raw in {None, "unknown", "unavailable"}:
-        return "unknown"
-    return "online" if raw == "on" else "offline"
-
-
-async def system_overview(client: HomeAssistantClient) -> SystemResponse:
-    nodes = {node.id: await system_node(client, node.id) for node in NODES}
-    backing_entity_ids = tuple(
-        service.entity_id for service in SERVICES if service.entity_id is not None
+def _service_from_metric(
+    service_id: str,
+    source: str,
+    metric: SystemMetric | None,
+    *,
+    healthy_values: frozenset[str],
+    offline_values: frozenset[str],
+) -> ServiceStatus:
+    if metric is None or not metric.available or metric.value is None:
+        freshness = metric.freshness if metric is not None else "unknown"
+        return ServiceStatus(
+            id=service_id,
+            status="unknown",
+            health="unknown",
+            source=source,
+            freshness=freshness,
+        )
+    normalized = str(metric.value).strip().lower()
+    if normalized in healthy_values:
+        status_value = "online"
+    elif normalized in offline_values:
+        status_value = "offline"
+    else:
+        status_value = "unknown"
+    return ServiceStatus(
+        id=service_id,
+        status=status_value,
+        health="healthy" if status_value == "online" else status_value,
+        source=source,
+        stale=metric.stale,
+        freshness=metric.freshness,
     )
-    states = await client.get_states(backing_entity_ids) if backing_entity_ids else {}
+
+
+async def system_overview(
+    client: HomeAssistantClient,
+    dns_cluster: DnsClusterStatus | None = None,
+) -> SystemResponse:
+    dns_cluster = dns_cluster or unknown_dns_cluster()
+    primary = await system_node(client, "primary")
+    secondary = await system_node(client, "secondary")
+    frigate_states = await client.get_states(FRIGATE_ENTITIES)
+    frigate_metric = _metric(FRIGATE_STATUS_ENTITY, frigate_states[FRIGATE_STATUS_ENTITY])
+    boolean_healthy = frozenset({"true", "on", "1"})
+    boolean_offline = frozenset({"false", "off", "0"})
     services = [
         ServiceStatus(
-            id=service.id,
-            status="online"
-            if service.entity_id is None
-            else _service_status(states.get(service.entity_id)),
-            source=service.source,
-        )
-        for service in SERVICES
+            id="home_assistant",
+            status="online",
+            health="healthy",
+            source="RoomOS HA API",
+            freshness="fresh",
+        ),
+        _service_from_metric(
+            "frigate",
+            "Home Assistant Frigate integration",
+            frigate_metric,
+            healthy_values=frozenset({"running", "online", "healthy", "ok", "up"}),
+            offline_values=frozenset({"stopped", "offline", "failed", "down", "error"}),
+        ),
+        _service_from_metric(
+            "nextcloud",
+            "Home Assistant REST monitor",
+            primary.metrics.get("primary_nextcloud"),
+            healthy_values=frozenset({"ok", "online", "healthy", "running", "up"}),
+            offline_values=frozenset({"offline", "failed", "down", "error", "unhealthy"}),
+        ),
+        _service_from_metric(
+            "docker",
+            "Primary status monitor",
+            primary.metrics.get("primary_docker"),
+            healthy_values=boolean_healthy,
+            offline_values=boolean_offline,
+        ),
+        ServiceStatus(
+            id="dns",
+            status=(
+                "online"
+                if dns_cluster.status in {"healthy", "degraded"}
+                else "offline" if dns_cluster.status == "offline" else "unknown"
+            ),
+            health=dns_cluster.status,
+            source="RoomOS functional DNS probe",
+            freshness="fresh" if dns_cluster.last_checked is not None else "unknown",
+        ),
+        _service_from_metric(
+            "tailscale",
+            "Primary status monitor",
+            primary.metrics.get("primary_tailscale"),
+            healthy_values=boolean_healthy,
+            offline_values=boolean_offline,
+        ),
     ]
-    return SystemResponse(nodes=nodes, services=services)
+    return SystemResponse(
+        primary=primary,
+        secondary=secondary,
+        services=services,
+        dns_cluster=dns_cluster,
+    )
 
 
 def ha_unavailable_response(exc: HomeAssistantUnavailable) -> HTTPException:

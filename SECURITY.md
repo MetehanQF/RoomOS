@@ -70,7 +70,7 @@ actions and results — never tokens, session secrets, pairing codes,
 `cap_drop: ALL`, `no-new-privileges`, tmpfs writable paths and resource limits.
 Core is never published on the host.
 
-## Known limitations in v0.1.0
+## Known limitations
 
 **The network boundary still matters.** Device authentication raises the bar
 considerably, but RoomOS is designed for a trusted LAN or a private overlay.

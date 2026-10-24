@@ -54,9 +54,9 @@ Run all of it before opening a pull request. More in
 
 ## Working on devices and entities
 
-Anything deployment-specific goes in the device registry, never in source.
+Anything deployment-specific goes in the installation registry, never in source.
 
-If you add a field, add it to `core/app/devices.example.yaml` with a placeholder
+If you add a field, add it to `core/app/installation.example.yaml` with a placeholder
 and document it in [docs/configuration.md](docs/configuration.md). If a test
 needs a device, add it to the example registry — do not hardcode an entity ID or
 a device count in a test. Existing tests derive both from the registry; keep it
