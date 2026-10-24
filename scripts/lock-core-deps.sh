@@ -47,5 +47,6 @@ PY
   echo "# Platform: linux/$(docker image inspect --format '{{.Architecture}}' "$image"), CPython 3.12"
   echo "$body"
 } >"$lock_file"
+python3 "$repo_dir/scripts/lock_add_platform_hashes.py" "$lock_file"
 
 echo "wrote $lock_file"

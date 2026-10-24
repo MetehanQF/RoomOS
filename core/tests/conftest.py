@@ -10,6 +10,10 @@ from app.main import app, get_ha, get_settings, require_control_enabled
 @pytest.fixture(autouse=True)
 def isolated_push_state(monkeypatch, tmp_path):
     """7G: no test may read or write the host's real push/FCM state or VAPID key."""
+    # Every default under /var/lib/roomos-auth/ moves to tmp_path; explicit Settings(...) kwargs still win.
+    for field in Settings.model_fields.values():
+        if isinstance(field.default, str) and field.default.startswith("/var/lib/roomos-auth/"):
+            monkeypatch.setenv(field.alias, str(tmp_path / field.default.rsplit("/", 1)[1]))
     monkeypatch.setenv("ROOMOS_METRICS_HISTORY_PATH", str(tmp_path / "metrics-history.db"))
     for key, name in {
         "ROOMOS_PUSH_REGISTRY_PATH": "push-registry.json",
