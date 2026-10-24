@@ -16,6 +16,23 @@ While the major version is `0`, minor releases may contain breaking changes.
 - General API rate limiting.
 - Demo mode with synthetic data, for screenshots and contributor onboarding.
 
+## [0.2.1] - 2026-10-24
+
+### Fixed
+
+- Core container image now builds on `linux/amd64`: `core/requirements.lock`
+  carries PyPI sha256 hashes for the amd64 and arm64 CPython 3.12 glibc wheels.
+  Previously only the arm64 hashes were locked, so `pip --require-hashes`
+  rejected every amd64 wheel. Existing hashes are unchanged.
+- Core tests no longer touch host state: every default under
+  `/var/lib/roomos-auth/` points at a temporary directory, so the auth tests pass
+  on machines where that directory does not exist.
+
+### Added
+
+- `scripts/lock_add_platform_hashes.py`, run by `scripts/lock-core-deps.sh`, adds
+  the per-platform wheel hashes and refuses any locked hash PyPI does not publish.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added
@@ -174,6 +191,7 @@ Initial public release.
 - Lighting is the only supported device class.
 - The Android and Wear OS clients are architecture notes, not implementations.
 
-[Unreleased]: https://github.com/MetehanQF/RoomOS/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/MetehanQF/RoomOS/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/MetehanQF/RoomOS/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/MetehanQF/RoomOS/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MetehanQF/RoomOS/releases/tag/v0.1.0

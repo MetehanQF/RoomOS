@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "RoomOS Core"
-    app_version: str = "0.2.0"
+    app_version: str = "0.2.1"
     release_name: str = Field(default="development", alias="ROOMOS_RELEASE")
     release_revision: str = Field(default="unknown", alias="ROOMOS_REVISION")
     release_component: Literal["core"] = Field(
